@@ -1,0 +1,5 @@
+{
+  "name": "RIVOQ Backend API",
+  "version": "1.0.0",
+  "description": "Senior-level Express.js backend with MongoDB, Swagger, and AdminJS"
+}

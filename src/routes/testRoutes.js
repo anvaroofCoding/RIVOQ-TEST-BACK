@@ -1,0 +1,271 @@
+import express from 'express';
+import { authenticate } from '../middleware/auth.js';
+import * as testController from '../controllers/testController.js';
+
+const router = express.Router();
+
+/**
+ * @swagger
+ * /me:
+ *   get:
+ *     tags: [Test]
+ *     summary: Get current user profile
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/me', authenticate, testController.me);
+
+/**
+ * @swagger
+ * /subjects:
+ *   get:
+ *     tags: [Test]
+ *     summary: List subjects (Fan) with search & pagination
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: false
+ *         description: Search query (matches name or description)
+ *         schema: { type: string }
+ *         example: "math"
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         description: Page number (1-based)
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         required: false
+ *         description: Page size (max 100)
+ *         schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+ */
+router.get('/subjects', authenticate, testController.listSubjects);
+
+/**
+ * @swagger
+ * /subjects/{subjectId}/topics:
+ *   get:
+ *     tags: [Test]
+ *     summary: List topics (Mavzu) by subject with search & pagination
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: subjectId
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: q
+ *         required: false
+ *         description: Search query (matches name or description)
+ *         schema: { type: string }
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         description: Page number (1-based)
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         required: false
+ *         description: Page size (max 100)
+ *         schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+ */
+router.get('/subjects/:subjectId/topics', authenticate, testController.listTopicsBySubject);
+
+/**
+ * @swagger
+ * /topics/{topicId}/start:
+ *   post:
+ *     tags: [Test]
+ *     summary: Start a test session for a topic
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: topicId
+ *         required: true
+ *         schema: { type: string }
+ */
+router.post('/topics/:topicId/start', authenticate, testController.startTopic);
+
+/**
+ * @swagger
+ * /sessions/history:
+ *   get:
+ *     tags: [Test]
+ *     summary: Finished tests history (list)
+ *     description: Paginated list of finished sessions with topic name, score, and timestamps.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: false
+ *         description: Search by topic/test name
+ *         schema: { type: string }
+ *       - in: query
+ *         name: page
+ *         required: false
+ *         schema: { type: integer, minimum: 1, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         required: false
+ *         schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
+ */
+router.get('/sessions/history', authenticate, testController.listSessionHistory);
+
+/**
+ * @swagger
+ * /sessions/{sessionId}/history:
+ *   get:
+ *     tags: [Test]
+ *     summary: Finished test history detail (per-question review)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema: { type: string }
+ */
+router.get('/sessions/:sessionId/history', authenticate, testController.getSessionHistoryDetail);
+
+/**
+ * @swagger
+ * /sessions/{sessionId}:
+ *   get:
+ *     tags: [Test]
+ *     summary: Get session status and current question
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema: { type: string }
+ */
+router.get('/sessions/:sessionId', authenticate, testController.getSession);
+
+/**
+ * @swagger
+ * /sessions:
+ *   get:
+ *     tags: [Test]
+ *     summary: List my test sessions (archive)
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/sessions', authenticate, testController.listMySessions);
+
+/**
+ * @swagger
+ * /sessions/{sessionId}/answer:
+ *   post:
+ *     tags: [Test]
+ *     summary: Submit answer for current question (moves to next)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [answer]
+ *             properties:
+ *               answer:
+ *                 type: string
+ */
+router.post('/sessions/:sessionId/answer', authenticate, testController.answerSession);
+
+/**
+ * @swagger
+ * /sessions/{sessionId}/answers/{index}:
+ *   patch:
+ *     tags: [Test]
+ *     summary: Update an existing answer by question index (A/B/C/D or option text)
+ *     description: Allows changing previously selected answers while session is in_progress.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema: { type: string }
+ *       - in: path
+ *         name: index
+ *         required: true
+ *         description: Question index (0-based)
+ *         schema: { type: integer, minimum: 0 }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [answer]
+ *             properties:
+ *               answer:
+ *                 type: string
+ *                 example: "B"
+ *     responses:
+ *       200:
+ *         description: Updated answer + refreshed score
+ */
+router.patch('/sessions/:sessionId/answers/:index', authenticate, testController.updateSessionAnswer);
+
+/**
+ * @swagger
+ * /sessions/{sessionId}/finish:
+ *   post:
+ *     tags: [Test]
+ *     summary: Finish a session early (manual submit)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: Session finished summary
+ */
+router.post('/sessions/:sessionId/finish', authenticate, testController.finishSession);
+
+/**
+ * @swagger
+ * /sessions/{sessionId}/results:
+ *   get:
+ *     tags: [Test]
+ *     summary: Get finished session results (includes correct answers)
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema: { type: string }
+ */
+router.get('/sessions/:sessionId/results', authenticate, testController.getSessionResults);
+
+/**
+ * @swagger
+ * /analytics/me:
+ *   get:
+ *     tags: [Test]
+ *     summary: Analytics summary for current user
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/analytics/me', authenticate, testController.myAnalytics);
+
+export default router;
+
