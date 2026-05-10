@@ -17,7 +17,7 @@ AdminJS.registerAdapter({
   Resource: AdminJSMongoose.Resource,
 });
 
-export const setupAdmin = (app) => {
+export const setupAdmin = async (app) => {
   try {
     const fromRoot = (...p) => path.resolve(process.cwd(), ...p);
     const componentLoader = new ComponentLoader();
@@ -593,6 +593,16 @@ export const setupAdmin = (app) => {
         .unlink(path.join(process.cwd(), '.adminjs', 'bundle.js'))
         .catch(() => {});
       void admin.watch().catch((e) => console.error('AdminJS watch:', e?.message || e));
+    } else {
+      // @adminjs/express ichida admin.initialize() faqat .then() bilan chaqiriladi —
+      // rollback xatosi "unhandledRejection" bo‘lib, Render logda sabab ko‘rinmasdan process yopiladi.
+      try {
+        await admin.initialize();
+        process.env.ADMIN_JS_SKIP_BUNDLE = 'true';
+      } catch (e) {
+        console.error('[AdminJS] Production bundle xatosi:', e?.stack || e?.message || e);
+        throw e;
+      }
     }
 
     const ADMIN_PANEL_PASSWORD = process.env.ADMIN_PANEL_PASSWORD || '123123';
@@ -639,7 +649,7 @@ export const setupAdmin = (app) => {
     return admin;
   } catch (error) {
     console.error('Admin panel setup error:', error);
-    return null;
+    throw error;
   }
 };
 

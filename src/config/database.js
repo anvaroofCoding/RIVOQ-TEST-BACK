@@ -39,6 +39,13 @@ function logMongoConnectionHints(message) {
 export const connectDB = async () => {
   try {
     await mongoose.connect(config.mongodb.uri, config.mongodb.options);
+    // Haqiqatan DB javob berayotganini tekshiramiz (faqat `connect` resolve yetarli emas deb hisoblangan chekka holatlar uchun)
+    await mongoose.connection.db.admin().command({ ping: 1 });
+
+    if (mongoose.connection.readyState !== 1) {
+      throw new Error(`Mongo ulanmagan (readyState=${mongoose.connection.readyState})`);
+    }
+
     console.log('✓ MongoDB connected successfully');
   } catch (error) {
     console.error('✗ MongoDB connection failed:', error.message);
