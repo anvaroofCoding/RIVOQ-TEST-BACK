@@ -11,6 +11,8 @@ export const config = {
     options: {
       useNewUrlParser: true,
       useUnifiedTopology: true,
+      serverSelectionTimeoutMS: Number(process.env.MONGODB_SERVER_SELECTION_MS) || 45000,
+      connectTimeoutMS: Number(process.env.MONGODB_CONNECT_TIMEOUT_MS) || 20000,
     },
   },
   jwt: {

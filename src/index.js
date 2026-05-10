@@ -14,7 +14,7 @@ import { connectDB } from './config/database.js';
 import { swaggerSpec } from './config/swagger.js';
 import { initializePassport } from './config/passport.js';
 import path from 'path';
-import { setupAdmin } from './admin/setup.js';
+import { setupAdmin, ensureDefaultAdminPanelUser } from './admin/setup.js';
 
 import authRoutes from './routes/authRoutes.js';
 import testRoutes from './routes/testRoutes.js';
@@ -135,6 +135,7 @@ app.use(errorHandler);
 const startServer = async () => {
   try {
     await connectDB();
+    await ensureDefaultAdminPanelUser();
 
     app.listen(config.port, config.host, () => {
       const ifaces = os.networkInterfaces();

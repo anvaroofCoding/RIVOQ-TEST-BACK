@@ -596,31 +596,6 @@ export const setupAdmin = (app) => {
     }
 
     const ADMIN_PANEL_PASSWORD = process.env.ADMIN_PANEL_PASSWORD || '123123';
-    const DEFAULT_ADMIN_EMAIL = String(process.env.ADMIN_EMAIL || 'admin@rivoq.com').toLowerCase();
-
-    // Ensure there is at least one active admin user for panel login.
-    // Panel password is separate (ADMIN_PANEL_PASSWORD).
-    (async () => {
-      try {
-        const existing = await User.findOne({ email: DEFAULT_ADMIN_EMAIL });
-        if (!existing) {
-          await User.create({
-            name: 'Admin',
-            email: DEFAULT_ADMIN_EMAIL,
-            phone: '',
-            password: Math.random().toString(36).slice(-10),
-            role: 'admin',
-            isActive: true,
-          });
-          console.log('✓ Default admin user created:', DEFAULT_ADMIN_EMAIL);
-        } else if (existing.role !== 'admin' || existing.isActive === false) {
-          await User.updateOne({ _id: existing._id }, { $set: { role: 'admin', isActive: true } });
-          console.log('✓ Default admin user ensured:', DEFAULT_ADMIN_EMAIL);
-        }
-      } catch (e) {
-        console.error('Failed to ensure default admin user:', e?.message || e);
-      }
-    })();
 
     const adminRouter = AdminJSExpress.buildAuthenticatedRouter(
       admin,
@@ -667,3 +642,27 @@ export const setupAdmin = (app) => {
     return null;
   }
 };
+
+/** `connectDB()` dan keyin chaqiring — mongoose ulanmaguncha User so‘rovi buffering timeout bermasligi uchun */
+export async function ensureDefaultAdminPanelUser() {
+  const email = String(process.env.ADMIN_EMAIL || 'admin@rivoq.com').toLowerCase();
+  try {
+    const existing = await User.findOne({ email });
+    if (!existing) {
+      await User.create({
+        name: 'Admin',
+        email,
+        phone: '',
+        password: Math.random().toString(36).slice(-10),
+        role: 'admin',
+        isActive: true,
+      });
+      console.log('✓ Default admin user created:', email);
+    } else if (existing.role !== 'admin' || existing.isActive === false) {
+      await User.updateOne({ _id: existing._id }, { $set: { role: 'admin', isActive: true } });
+      console.log('✓ Default admin user ensured:', email);
+    }
+  } catch (e) {
+    console.error('Failed to ensure default admin user:', e?.message || e);
+  }
+}
