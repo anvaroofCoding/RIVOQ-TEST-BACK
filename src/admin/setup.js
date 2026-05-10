@@ -1,6 +1,7 @@
 import fs from 'fs/promises';
 import path from 'path';
-import MongoStore from 'connect-mongo';
+import { config } from '../config/index.js';
+import { createMongoSessionStore } from '../config/database.js';
 import AdminJS, { ComponentLoader, flat } from 'adminjs';
 import AdminJSExpress from '@adminjs/express';
 import * as AdminJSMongoose from '@adminjs/mongoose';
@@ -10,7 +11,6 @@ import { Subject } from '../models/Subject.js';
 import { Topic } from '../models/Topic.js';
 import { Question } from '../models/Question.js';
 import { Notification } from '../models/Notification.js';
-import { config } from '../config/index.js';
 
 AdminJS.registerAdapter({
   Database: AdminJSMongoose.Database,
@@ -632,7 +632,7 @@ export const setupAdmin = async (app) => {
       {
         resave: false,
         saveUninitialized: false,
-        store: new MongoStore({ mongoUrl: config.mongodb.uri }),
+        store: createMongoSessionStore(),
         cookie: {
           maxAge: 24 * 60 * 60 * 1000,
           secure: config.node_env === 'production',

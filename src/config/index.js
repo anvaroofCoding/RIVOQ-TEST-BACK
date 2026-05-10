@@ -5,7 +5,13 @@ dotenv.config();
 export const config = {
   node_env: process.env.NODE_ENV || 'development',
   host: process.env.HOST || '0.0.0.0',
-  port: process.env.PORT || 3000,
+  port:
+    process.env.PORT === undefined || process.env.PORT === ''
+      ? 3000
+      : (() => {
+          const n = Number(process.env.PORT);
+          return Number.isFinite(n) && n >= 1 ? Math.trunc(n) : 3000;
+        })(),
   mongodb: {
     uri: process.env.MONGODB_URI || 'mongodb://localhost:27017/rivoq',
     options: {

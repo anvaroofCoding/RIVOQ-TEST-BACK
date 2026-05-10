@@ -5,13 +5,13 @@ import helmet from 'helmet';
 import morgan from 'morgan';
 import swaggerUi from 'swagger-ui-express';
 import session from 'express-session';
-import MongoStore from 'connect-mongo';
 import passport from 'passport';
 import os from 'os';
+import fs from 'fs';
 import path from 'path';
 
 import { config } from './config/index.js';
-import { connectDB } from './config/database.js';
+import { connectDB, createMongoSessionStore } from './config/database.js';
 import { swaggerSpec } from './config/swagger.js';
 import { initializePassport } from './config/passport.js';
 import { setupAdmin, ensureDefaultAdminPanelUser } from './admin/setup.js';
@@ -60,9 +60,7 @@ async function buildApp() {
       secret: config.session.secret,
       resave: false,
       saveUninitialized: false,
-      store: new MongoStore({
-        mongoUrl: config.mongodb.uri,
-      }),
+      store: createMongoSessionStore(),
       cookie: {
         maxAge: 24 * 60 * 60 * 1000,
         secure: config.node_env === 'production',
@@ -128,17 +126,20 @@ async function buildApp() {
 }
 
 async function bootstrap() {
-  console.log(
-    `[RIVOQ] start node=${process.version} env=${config.node_env} port=${config.port}`
-  );
+  const port = Number(config.port) || 3000;
+  console.log(`[RIVOQ] start node=${process.version} env=${config.node_env} port=${port} host=${config.host}`);
 
   await connectDB();
   await ensureDefaultAdminPanelUser();
 
+  fs.writeSync(2, '[RIVOQ] HTTP: Express app yig‘ilmoqda (AdminJS bundle bo‘lishi mumkin)…\n');
+
   const app = await buildApp();
 
+  fs.writeSync(2, `[RIVOQ] HTTP: listen(${config.host}:${port})…\n`);
+
   return new Promise((resolve, reject) => {
-    app.listen(config.port, config.host, () => {
+    app.listen(port, config.host, () => {
       const ifaces = os.networkInterfaces();
       const ips = Object.values(ifaces)
         .flat()
@@ -147,21 +148,28 @@ async function bootstrap() {
       const lan = ips[0];
 
       console.log(`\n${'='.repeat(50)}`);
-      console.log(`✓ Server running on http://localhost:${config.port}`);
+      console.log(`✓ Server running on http://localhost:${port}`);
       if (lan) {
-        console.log(`✓ LAN Base URL: http://${lan}:${config.port}`);
-        console.log(`✓ LAN API Base: http://${lan}:${config.port}/api`);
+        console.log(`✓ LAN Base URL: http://${lan}:${port}`);
+        console.log(`✓ LAN API Base: http://${lan}:${port}/api`);
       }
-      console.log(`✓ API Docs: http://localhost:${config.port}/api-docs`);
-      console.log(`✓ Admin Dashboard: http://localhost:${config.port}/admin`);
+      console.log(`✓ API Docs: http://localhost:${port}/api-docs`);
+      console.log(`✓ Admin Dashboard: http://localhost:${port}/admin`);
       console.log(`✓ Environment: ${config.node_env}`);
       console.log(`${'='.repeat(50)}\n`);
+      fs.writeSync(2, `[RIVOQ] HTTP: server ochiq — port ${port}\n`);
       resolve();
     }).on('error', reject);
   });
 }
 
 bootstrap().catch((error) => {
-  console.error('Failed to start server:', error?.stack || error?.message || error);
+  const detail = error?.stack || error?.message || error;
+  try {
+    fs.writeSync(2, `Failed to start server:\n${detail}\n`);
+  } catch {
+    // ignore
+  }
+  console.error('Failed to start server:', detail);
   process.exit(1);
 });
