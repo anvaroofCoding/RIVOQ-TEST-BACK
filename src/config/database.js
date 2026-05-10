@@ -25,6 +25,12 @@ function logMongoConnectionHints(message) {
     );
   }
 
+  if (/railway\.internal/i.test(host || '') || /railway\.internal/i.test(config.mongodb.uri || '')) {
+    console.error(
+      '  → Railway `*.internal` Mongo host faqat Railway konteynerlari ichida resolve bo‘ladi. Render uchun MongoDB Atlas `mongodb+srv://...@cluster….mongodb.net/...` yoki boshqa public URL yozing.'
+    );
+  }
+
   if (/ENOTFOUND|querySrv|getaddrinfo/i.test(message || '')) {
     console.error('  Tekshirish: Atlas hostname; Render’da MONGODB_URI; Network Access; maxfiy belgili parol uchun URL-encoding.');
   }
