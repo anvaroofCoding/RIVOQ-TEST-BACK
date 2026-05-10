@@ -1,0 +1,20 @@
+# Render Web Service — Rivog backend (https://render.com/docs/blueprint-spec)
+#
+# Qo‘lda qo‘yiladigan o‘zgaruvchilar (Dashboard → Environment):
+# - MONGODB_URI (MongoDB Atlas to‘liq connection string)
+# - JWT_SECRET, SESSION_SECRET, ADMIN_COOKIE_PASSWORD (uzun tasodifiy qatorlar)
+# - ADMIN_PANEL_PASSWORD (AdminJS panel kirish paroli)
+# - ADMIN_EMAIL (standart admin DB emaili — setup.js da tekshiriladi)
+# Google OAuth uchun: GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_CALLBACK_URL = https://<sizning-sayt>.onrender.com/api/auth/google/callback
+
+services:
+  - type: web
+    name: rivoq-backend
+    runtime: node
+    plan: starter
+    region: frankfurt
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production

@@ -29,6 +29,10 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 
 const app = express();
 
+if (config.node_env === 'production') {
+  app.set('trust proxy', 1);
+}
+
 // Security Middleware
 // AdminJS uses inline scripts/styles on its pages; default Helmet CSP blocks them.
 // Disable CSP globally for now to keep AdminJS working.
