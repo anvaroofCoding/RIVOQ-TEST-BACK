@@ -13,8 +13,12 @@ services:
     runtime: node
     plan: starter
     region: frankfurt
-    buildCommand: npm install
+    buildCommand: npm install --omit=dev
     startCommand: npm start
     envVars:
+      # AdminJS 7.x → `import … with { type: 'json' }` faqat Node 20.10+ / 22+ da ishlaydi
+      # (Render'da podda Node 18 bo'lsa SyntaxError chiqadi.)
+      - key: NODE_VERSION
+        value: "22"
       - key: NODE_ENV
         value: production
