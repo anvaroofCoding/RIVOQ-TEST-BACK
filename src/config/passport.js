@@ -4,48 +4,51 @@ import { User } from '../models/User.js';
 import { generateToken } from '../utils/jwt.js';
 import { config } from './index.js';
 
+export const isGoogleOAuthEnabled = () => {
+  const id = config.google.clientID && String(config.google.clientID).trim();
+  const secret = process.env.GOOGLE_CLIENT_SECRET && String(process.env.GOOGLE_CLIENT_SECRET).trim();
+  return Boolean(id && secret);
+};
+
 export const initializePassport = () => {
-  passport.use(
-    new GoogleStrategy(
-      {
-        clientID: config.google.clientID,
-        clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-        callbackURL: config.google.callbackURL,
-      },
-      async (accessToken, refreshToken, profile, done) => {
-        try {
-          // Google profile'dan email ni olish
-          const email = profile.emails[0].value;
-          const name = profile.displayName;
+  if (isGoogleOAuthEnabled()) {
+    passport.use(
+      new GoogleStrategy(
+        {
+          clientID: String(config.google.clientID).trim(),
+          clientSecret: String(process.env.GOOGLE_CLIENT_SECRET).trim(),
+          callbackURL: config.google.callbackURL,
+        },
+        async (accessToken, refreshToken, profile, done) => {
+          try {
+            const email = profile.emails[0].value;
+            const name = profile.displayName;
 
-          // User'ni database'da qidirish
-          let user = await User.findOne({ email });
+            let user = await User.findOne({ email });
 
-          // Agar user mavjud bo'lmasa, yangi user yaratish
-          if (!user) {
-            user = new User({
-              name,
-              email,
-              phone: '',
-              password: Math.random().toString(36).slice(-10), // Random password
-              role: 'user',
-              isActive: true,
-              avatar: profile.photos[0]?.value || null,
-            });
-            await user.save();
-            console.log('✓ New user created via Google:', email);
+            if (!user) {
+              user = new User({
+                name,
+                email,
+                phone: '',
+                password: Math.random().toString(36).slice(-10),
+                role: 'user',
+                isActive: true,
+                avatar: profile.photos[0]?.value || null,
+              });
+              await user.save();
+            }
+
+            const token = generateToken(user._id);
+
+            return done(null, { user: user.toJSON(), token });
+          } catch (error) {
+            return done(error, null);
           }
-
-          // JWT token yaratish
-          const token = generateToken(user._id);
-
-          return done(null, { user: user.toJSON(), token });
-        } catch (error) {
-          return done(error, null);
         }
-      }
-    )
-  );
+      )
+    );
+  }
 
   // Passport user serialization
   passport.serializeUser((data, done) => {

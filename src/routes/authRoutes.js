@@ -1,8 +1,17 @@
 import express from 'express';
 import passport from 'passport';
 import * as authController from '../controllers/authController.js';
+import { isGoogleOAuthEnabled } from '../config/passport.js';
 
 const router = express.Router();
+
+const googleLoginUnavailable = (req, res) => {
+  res.status(503).json({
+    success: false,
+    message:
+      'Google bilan kirish bu serverda sozlanmagan. Render’da GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET va GOOGLE_CALLBACK_URL qo‘shing.',
+  });
+};
 
 // Google OAuth Routes
 /**
@@ -26,6 +35,9 @@ const router = express.Router();
 router.get(
   '/google',
   (req, res, next) => {
+    if (!isGoogleOAuthEnabled()) {
+      return googleLoginUnavailable(req, res);
+    }
     const redirectUri = typeof req.query.redirect_uri === 'string' ? req.query.redirect_uri : null;
     const mobile = String(req.query?.mobile || '') === '1';
 
@@ -90,6 +102,9 @@ router.get(
 router.get(
   '/google/callback',
   (req, res, next) => {
+    if (!isGoogleOAuthEnabled()) {
+      return googleLoginUnavailable(req, res);
+    }
     // If someone opens callback URL directly (without Google redirect),
     // start the OAuth flow properly via /auth/google (which includes scope).
     if (!req.query?.code && !req.query?.error) {
