@@ -7,7 +7,6 @@ import swaggerUi from 'swagger-ui-express';
 import session from 'express-session';
 import passport from 'passport';
 import os from 'os';
-import fs from 'fs';
 import path from 'path';
 
 import { config } from './config/index.js';
@@ -28,12 +27,12 @@ import activityRoutes from './routes/activityRoutes.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[RIVOQ FATAL] Unhandled rejection:', reason instanceof Error ? reason.stack : reason);
+  console.error('Unhandled rejection:', reason instanceof Error ? reason.stack : reason);
   process.exit(1);
 });
 
 process.on('uncaughtException', (err) => {
-  console.error('[RIVOQ FATAL] Uncaught exception:', err?.stack || err);
+  console.error('Uncaught exception:', err?.stack || err);
   process.exit(1);
 });
 
@@ -110,6 +109,21 @@ async function buildApp() {
     });
   });
 
+  app.get(['/api', '/api/'], (req, res) => {
+    res.json({
+      ok: true,
+      message: 'API root — aniq patchlar /api/... ostida',
+      health: '/health',
+      docs: '/api-docs',
+      admin: '/admin',
+      examples: {
+        auth: '/api/auth',
+        subjects: 'GET /api/subjects (Bearer token)',
+        me: 'GET /api/me',
+      },
+    });
+  });
+
   app.use('/api/auth', authRoutes);
   app.use('/api', testRoutes);
   app.use('/api', walletRoutes);
@@ -127,49 +141,36 @@ async function buildApp() {
 
 async function bootstrap() {
   const port = Number(config.port) || 3000;
-  console.log(`[RIVOQ] start node=${process.version} env=${config.node_env} port=${port} host=${config.host}`);
 
   await connectDB();
   await ensureDefaultAdminPanelUser();
 
-  fs.writeSync(2, '[RIVOQ] HTTP: Express app yig‘ilmoqda (AdminJS bundle bo‘lishi mumkin)…\n');
-
   const app = await buildApp();
-
-  fs.writeSync(2, `[RIVOQ] HTTP: listen(${config.host}:${port})…\n`);
 
   return new Promise((resolve, reject) => {
     app.listen(port, config.host, () => {
-      const ifaces = os.networkInterfaces();
-      const ips = Object.values(ifaces)
-        .flat()
-        .filter((i) => i && i.family === 'IPv4' && !i.internal)
-        .map((i) => i.address);
-      const lan = ips[0];
-
-      console.log(`\n${'='.repeat(50)}`);
-      console.log(`✓ Server running on http://localhost:${port}`);
-      if (lan) {
-        console.log(`✓ LAN Base URL: http://${lan}:${port}`);
-        console.log(`✓ LAN API Base: http://${lan}:${port}/api`);
+      if (config.node_env === 'production') {
+        console.log(`Listening on port ${port}`);
+      } else {
+        const ifaces = os.networkInterfaces();
+        const ips = Object.values(ifaces)
+          .flat()
+          .filter((i) => i && i.family === 'IPv4' && !i.internal)
+          .map((i) => i.address);
+        const lan = ips[0];
+        console.log(`\n${'='.repeat(50)}`);
+        console.log(`✓ Server http://localhost:${port}`);
+        if (lan) console.log(`✓ LAN http://${lan}:${port}`);
+        console.log(`✓ Docs http://localhost:${port}/api-docs`);
+        console.log(`✓ Admin http://localhost:${port}/admin`);
+        console.log(`${'='.repeat(50)}\n`);
       }
-      console.log(`✓ API Docs: http://localhost:${port}/api-docs`);
-      console.log(`✓ Admin Dashboard: http://localhost:${port}/admin`);
-      console.log(`✓ Environment: ${config.node_env}`);
-      console.log(`${'='.repeat(50)}\n`);
-      fs.writeSync(2, `[RIVOQ] HTTP: server ochiq — port ${port}\n`);
       resolve();
     }).on('error', reject);
   });
 }
 
 bootstrap().catch((error) => {
-  const detail = error?.stack || error?.message || error;
-  try {
-    fs.writeSync(2, `Failed to start server:\n${detail}\n`);
-  } catch {
-    // ignore
-  }
-  console.error('Failed to start server:', detail);
+  console.error('Server start:', error?.stack || error?.message || error);
   process.exit(1);
 });

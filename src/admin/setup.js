@@ -594,13 +594,11 @@ export const setupAdmin = async (app) => {
         .catch(() => {});
       void admin.watch().catch((e) => console.error('AdminJS watch:', e?.message || e));
     } else {
-      // @adminjs/express ichida admin.initialize() faqat .then() bilan chaqiriladi —
-      // rollback xatosi "unhandledRejection" bo‘lib, Render logda sabab ko‘rinmasdan process yopiladi.
       try {
         await admin.initialize();
         process.env.ADMIN_JS_SKIP_BUNDLE = 'true';
       } catch (e) {
-        console.error('[AdminJS] Production bundle xatosi:', e?.stack || e?.message || e);
+        console.error('AdminJS bundle:', e?.stack || e?.message || e);
         throw e;
       }
     }

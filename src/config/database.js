@@ -1,17 +1,8 @@
-import fs from 'fs';
 import mongoose from 'mongoose';
 import MongoStore from 'connect-mongo';
 import { config } from './index.js';
 
-function slog(msg) {
-  try {
-    fs.writeSync(2, `[RIVOQ] ${msg}\n`);
-  } catch {
-    // ignore
-  }
-}
-
-/** Faqat `connectDB()` muvaffaqiyatli tugagach — bitta Mongo client (mongoose) session uchun ham ishlatiladi */
+/** Mongoose ulanishi tayyor bo‘lgandan keyin — sessiya uchun alohida `MongoClient` ochilmaydi */
 export function createMongoSessionStore() {
   const client = mongoose.connection.getClient();
   return MongoStore.create({
@@ -20,7 +11,6 @@ export function createMongoSessionStore() {
   });
 }
 
-/** Parol chiqarilmasin — faqat host (xato aniqlash uchun) */
 function mongoHostFromUri(uri) {
   if (!uri || typeof uri !== 'string') return '(bo‘sh)';
   const trimmed = uri.trim();
@@ -30,57 +20,31 @@ function mongoHostFromUri(uri) {
   return hostPort.split(':')[0] || '(host topilmadi)';
 }
 
-function logMongoConnectionHints(message) {
-  const host = mongoHostFromUri(config.mongodb.uri);
-  slog(`  Host (URI dan): ${host}`);
-
-  const looksPlaceholder =
-    /xxxxx|example\.mongodb|placeholder|your[_-]?cluster|cluster\.example/i.test(host) ||
-    /xxxxx|YOUR_PASSWORD|yourpassword/i.test(config.mongodb.uri);
-
-  if (looksPlaceholder) {
-    slog(
-      '  → Ko‘rinib turibdiki, namunaviy (placeholder) hostname/URI ishlatilgan. MongoDB Atlas → Connect → Drivers dan haqiqiy string nusxalang.'
-    );
-  }
-
-  if (/railway\.internal/i.test(host || '') || /railway\.internal/i.test(config.mongodb.uri || '')) {
-    slog(
-      '  → Railway *.internal Mongo host Render’da ishlamaydi. Atlas mongodb+srv qo‘ying.'
-    );
-  }
-
-  if (/ENOTFOUND|querySrv|getaddrinfo/i.test(message || '')) {
-    slog("  Tekshirish: Atlas hostname; Render’da MONGODB_URI; Network Access ''0.0.0.0/0''; URL-encoded parol.");
-  }
-}
-
 export const connectDB = async () => {
   try {
-    const prod = config.node_env === 'production';
-    const hostGuess = mongoHostFromUri(config.mongodb.uri);
-    const localhostish =
-      /localhost|127\.0\.0\.1/i.test(config.mongodb.uri || '') ||
-      /^(localhost|127\.0\.0\.1)$/i.test(hostGuess);
-    slog(
-      prod && localhostish
-        ? 'MongoDB: ulanish… (WARN: productionda localhost ko‘rinadi — Render’da MONGODB_URI = Atlas kerak)'
-        : 'MongoDB: ulanish boshlandi…'
-    );
+    if (
+      config.node_env === 'production' &&
+      /localhost|127\.0\.0\.1/i.test(config.mongodb.uri || '')
+    ) {
+      console.warn('Mongo URI localhost — Render uchun Atlas/public URI kerak (MONGODB_URI).');
+    }
+
     await mongoose.connect(config.mongodb.uri, config.mongodb.options);
-    // Haqiqatan DB javob berayotganini tekshiramiz (faqat `connect` resolve yetarli emas deb hisoblangan chekka holatlar uchun)
     await mongoose.connection.db.admin().command({ ping: 1 });
 
     if (mongoose.connection.readyState !== 1) {
       throw new Error(`Mongo ulanmagan (readyState=${mongoose.connection.readyState})`);
     }
 
-    slog('MongoDB: ulanish muvaffaq (ping OK)');
-    console.log('✓ MongoDB connected successfully');
+    console.log('✓ MongoDB connected');
   } catch (error) {
     const msg = error?.message || String(error);
-    fs.writeSync(2, `✗ MongoDB connection failed: ${msg}\n`);
-    logMongoConnectionHints(msg);
+    const host = mongoHostFromUri(config.mongodb.uri);
+    console.error('MongoDB ulanmadi:', msg);
+    console.error(`  URI host: ${host}`);
+    if (/railway\.internal/i.test(config.mongodb.uri || '')) {
+      console.error('  *.internal URI Renderdan ochilmaydi — public/mongo+srv URIni MONGODB_URI ga qo‘ying.');
+    }
     throw error;
   }
 };
@@ -88,8 +52,8 @@ export const connectDB = async () => {
 export const disconnectDB = async () => {
   try {
     await mongoose.disconnect();
-    console.log('✓ MongoDB disconnected successfully');
+    console.log('✓ MongoDB disconnected');
   } catch (error) {
-    console.error('✗ MongoDB disconnection failed:', error.message);
+    console.error('MongoDB disconnect:', error.message);
   }
 };
