@@ -2,6 +2,7 @@ import StatusCodes from 'http-status-codes';
 import { User } from '../models/User.js';
 import { generateToken } from '../utils/jwt.js';
 import AppError from '../utils/AppError.js';
+import { allocateFriendIdIfMissing } from './friendIdService.js';
 
 export const authService = {
   async register(userData) {
@@ -12,10 +13,12 @@ export const authService = {
 
     const user = new User(userData);
     await user.save();
+    await allocateFriendIdIfMissing(user._id);
+    const refreshed = await User.findById(user._id);
 
     const token = generateToken(user._id);
     return {
-      user: user.toJSON(),
+      user: refreshed.toJSON(),
       token,
     };
   },
@@ -30,14 +33,18 @@ export const authService = {
       throw new AppError('User account is inactive', StatusCodes.FORBIDDEN);
     }
 
+    await allocateFriendIdIfMissing(user._id);
+    const refreshed = await User.findById(user._id);
+
     const token = generateToken(user._id);
     return {
-      user: user.toJSON(),
+      user: refreshed.toJSON(),
       token,
     };
   },
 
   async getUserProfile(userId) {
+    await allocateFriendIdIfMissing(userId);
     const user = await User.findById(userId);
     if (!user) {
       throw new AppError('User not found', StatusCodes.NOT_FOUND);

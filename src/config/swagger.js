@@ -38,6 +38,7 @@ const options = {
   // Document OAuth + Test solving endpoints.
   apis: [
     './src/routes/authRoutes.js',
+    './src/routes/profileRoutes.js',
     './src/routes/testRoutes.js',
     './src/routes/rankingRoutes.js',
     './src/routes/walletRoutes.js',

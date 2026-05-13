@@ -3,7 +3,10 @@ import { config } from '../config/index.js';
 import { User } from '../models/User.js';
 import { generateToken } from '../utils/jwt.js';
 import crypto from 'crypto';
+import StatusCodes from 'http-status-codes';
+import AppError from '../utils/AppError.js';
 import { sendOtpEmail } from '../utils/email.js';
+import { allocateFriendIdIfMissing } from '../services/friendIdService.js';
 
 /**
  * @swagger
@@ -165,6 +168,9 @@ export const devToken = asyncHandler(async (req, res) => {
   }
 
   const token = generateToken(user._id);
+  await allocateFriendIdIfMissing(user._id);
+  user = await User.findById(user._id);
+
   return res.status(200).json({
     success: true,
     data: { token, user: user.toJSON() },
@@ -185,7 +191,6 @@ export const requestEmailCode = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, message: 'email is required' });
   }
 
-  // basic rate limit (per user record)
   let user = await User.findOne({ email });
   if (!user) {
     user = await User.create({
@@ -199,20 +204,32 @@ export const requestEmailCode = asyncHandler(async (req, res) => {
   }
 
   const now = Date.now();
-  if (user.emailOtpLastSentAt && now - user.emailOtpLastSentAt.getTime() < 30_000) {
-    return res.status(429).json({
-      success: false,
-      message: 'Please wait before requesting another code',
-    });
-  }
-
   const code = generateOtp6();
   user.emailOtpHash = hashOtp(code);
   user.emailOtpExpiresAt = new Date(now + 10 * 60 * 1000); // 10 min
   user.emailOtpLastSentAt = new Date(now);
   await user.save();
 
-  await sendOtpEmail({ to: email, code });
+  try {
+    await sendOtpEmail({ to: email, code });
+  } catch (err) {
+    await User.updateOne(
+      { _id: user._id },
+      {
+        $set: {
+          emailOtpHash: null,
+          emailOtpExpiresAt: null,
+          emailOtpLastSentAt: null,
+        },
+      }
+    ).catch(() => {});
+    console.error('[request-email-code]', err?.message || err);
+    throw new AppError(
+      err?.message ||
+        'Emailga kod yuborilmadi — serverda SMTP/Gmail tekshiring yoki ilova backend manziliga ulanib bo‘lmayapti.',
+      StatusCodes.SERVICE_UNAVAILABLE
+    );
+  }
 
   return res.status(200).json({
     success: true,
@@ -254,13 +271,16 @@ export const verifyEmailCode = asyncHandler(async (req, res) => {
   user.emailOtpExpiresAt = null;
   await user.save();
 
+  await allocateFriendIdIfMissing(user._id);
+  const refreshed = await User.findById(user._id);
+
   const token = generateToken(user._id);
   return res.status(200).json({
     success: true,
     message: 'Email verified',
     data: {
       token,
-      user: user.toJSON(),
+      user: refreshed.toJSON(),
     },
   });
 });

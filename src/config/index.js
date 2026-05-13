@@ -1,6 +1,22 @@
 import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
 
-dotenv.config();
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+/** Loyiha ildizidagi .env — `cwd` ga bog‘lanmasin (Cursor/IDE boshqa papkadan ishga tushirsa ham). */
+const rootEnvPath = path.resolve(__dirname, '..', '..', '.env');
+/**
+ * Ishlab chiqarishda (.env yo‘q) platformadan kelgan HOSTING o‘zgaruvchilari saqlansin.
+ * Rivojlanishda .env ustun bersin — shell’dagi bo‘sh / eski SMTP_PASS qolmaysin.
+ */
+const envOverrideExisting = process.env.NODE_ENV !== 'production';
+
+if (fs.existsSync(rootEnvPath)) {
+  dotenv.config({ path: rootEnvPath, override: envOverrideExisting });
+} else {
+  dotenv.config({ override: envOverrideExisting });
+}
 
 export const config = {
   node_env: process.env.NODE_ENV || 'development',

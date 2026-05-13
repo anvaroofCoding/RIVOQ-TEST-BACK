@@ -10,6 +10,7 @@ const router = express.Router();
  *   get:
  *     tags: [Test]
  *     summary: Get current user profile
+ *     description: Mongo `_id` bilan birga `friendId` ham qaytadi — do‘stlar/sheriklar uchun ekranda **`friendId`** (10–16 raqam) ishlating; uzun hex bu emas.
  *     security:
  *       - bearerAuth: []
  */
@@ -76,10 +77,71 @@ router.get('/subjects/:subjectId/topics', authenticate, testController.listTopic
 
 /**
  * @swagger
+ * /topics/preview-by-code:
+ *   post:
+ *     tags: [Test]
+ *     summary: Kod bo'yicha test haqida ma'lumot (sessiya ochilmaydi)
+ *     description: |
+ *       Mobil ilova: foydalanuvchi 6 raqamni kiritgach, avval ushbu endpoint orqali fan/mavzu/vaqt/savollar soni chiqadi.
+ *       "Testni boshlash" bosilgach esa `/topics/start-with-code` chaqiriladi — undan keyingi oqim jamoat testi bilan bir xil.
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [code]
+ *             properties:
+ *               code:
+ *                 type: string
+ *                 pattern: '^\\d{6}$'
+ *                 example: "482193"
+ *     responses:
+ *       200:
+ *         description: Fan + mavzu meta (sessiya yo'q)
+ *       400:
+ *         description: Kod yoki mavzu noto'g'ri
+ *       404:
+ *         description: Kod topilmadi
+ */
+router.post('/topics/preview-by-code', authenticate, testController.previewTopicByAccessCode);
+
+/**
+ * @swagger
+ * /topics/start-with-code:
+ *   post:
+ *     tags: [Test]
+ *     summary: 6 raqamli kod bilan test sessiyasini boshlash (maxfiy mavzu)
+ *     description: Use for private tests that do not appear in the public catalog. Body must include the numeric code issued by the company in AdminJS.
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [code]
+ *             properties:
+ *               code:
+ *                 type: string
+ *                 pattern: '^\\d{6}$'
+ *                 example: "482193"
+ *     responses:
+ *       201:
+ *         description: Sessiya yaratildi — birinchi savol `data.current` da
+ */
+router.post('/topics/start-with-code', authenticate, testController.startTopicWithAccessCode);
+
+/**
+ * @swagger
  * /topics/{topicId}/start:
  *   post:
  *     tags: [Test]
- *     summary: Start a test session for a topic
+ *     summary: Start a test session for a public catalog topic
+ *     description: Company-private topics must use POST /topics/start-with-code instead.
  *     security:
  *       - bearerAuth: []
  *     parameters:

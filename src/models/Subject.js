@@ -8,7 +8,6 @@ const subjectSchema = new mongoose.Schema(
       trim: true,
       minlength: 2,
       maxlength: 80,
-      unique: true,
     },
     description: {
       type: String,
@@ -16,9 +15,18 @@ const subjectSchema = new mongoose.Schema(
       maxlength: 500,
       default: '',
     },
+    /** `null` = jamoat (mobil ilovada ko‘rinadi). Kompaniya testlari uchun Company user `_id` */
+    companyOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
   },
   { timestamps: true }
 );
+
+subjectSchema.index({ name: 1, companyOwner: 1 }, { unique: true });
 
 export const Subject = mongoose.model('Subject', subjectSchema);
 

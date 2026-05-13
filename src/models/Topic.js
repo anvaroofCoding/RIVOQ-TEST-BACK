@@ -37,11 +37,31 @@ const topicSchema = new mongoose.Schema(
       default: 0,
       min: 0,
     },
+    /** Subject bilan mos (maxfiy test); null = jamoat */
+    companyOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null,
+      index: true,
+    },
   },
   { timestamps: true }
 );
 
-topicSchema.index({ subject: 1, name: 1 }, { unique: true });
+topicSchema.pre('save', async function (next) {
+  try {
+    if (this.isModified('subject') || this.isNew) {
+      const Subject = (await import('./Subject.js')).Subject;
+      const sub = await Subject.findById(this.subject).select('companyOwner').lean();
+      this.companyOwner = sub?.companyOwner ? sub.companyOwner : null;
+    }
+    next();
+  } catch (e) {
+    next(e);
+  }
+});
+
+topicSchema.index({ subject: 1, name: 1, companyOwner: 1 }, { unique: true });
 
 export const Topic = mongoose.model('Topic', topicSchema);
 

@@ -15,6 +15,8 @@ services:
     region: frankfurt
     buildCommand: npm install --omit=dev
     startCommand: node src/index.js
+    # Render health probe — `GET /health` (JWT talab qilmaydi)
+    healthCheckPath: /health
     envVars:
       # AdminJS 7.x → `import … with { type: 'json' }` faqat Node 20.10+ / 22+ da ishlaydi
       # (Render'da podda Node 18 bo'lsa SyntaxError chiqadi.)

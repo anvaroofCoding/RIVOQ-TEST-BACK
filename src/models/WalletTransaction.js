@@ -18,6 +18,11 @@ const walletTransactionSchema = new mongoose.Schema(
       topicName: { type: String, default: null },
       subjectName: { type: String, default: null },
       percent: { type: Number, default: null },
+      /** `admin_wallet_grant` — kimdan */
+      byAdminEmail: { type: String, default: null, maxlength: 320 },
+      byAdminId: { type: String, default: null, maxlength: 64 },
+      /** `profile_social_*` bonuslarida */
+      platform: { type: String, default: null, maxlength: 64 },
     },
   },
   { timestamps: true }

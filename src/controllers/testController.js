@@ -6,8 +6,10 @@ import { Topic } from '../models/Topic.js';
 import { Question } from '../models/Question.js';
 import { TestSession } from '../models/TestSession.js';
 import crypto from 'crypto';
+import { TopicInviteCode } from '../models/TopicInviteCode.js';
 import { User } from '../models/User.js';
-import { WalletTransaction } from '../models/WalletTransaction.js';
+import { grantFinishRewardsIfNeeded, tryGrant80MilestoneOnce } from '../services/testRewards.js';
+import { ensureUserFriendIdFresh } from '../services/friendIdService.js';
 
 function shuffle(array) {
   const a = [...array];
@@ -68,6 +70,147 @@ function remainingSeconds(session) {
   return Math.max(0, Math.ceil(ms / 1000));
 }
 
+/** Jamoat katalogi — kompaniya maxfiy fan/mavzulari chiqmasin */
+function onlyPublicOwnerFilter() {
+  return { $or: [{ companyOwner: null }, { companyOwner: { $exists: false } }] };
+}
+
+async function createTestSessionResponse(userId, topicId, accessMode, options = {}) {
+  const { accessCode: accessCodeSnapshot } = options;
+
+  const topic = await Topic.findById(topicId).lean();
+  if (!topic) throw new AppError('Topic not found', StatusCodes.NOT_FOUND);
+
+  const sub = await Subject.findById(topic.subject).select('companyOwner').lean();
+  const isPrivate = Boolean(sub?.companyOwner);
+
+  if (accessMode === 'public' && isPrivate) {
+    throw new AppError(
+      'This test is only available with a 6-digit access code from your organization',
+      StatusCodes.FORBIDDEN
+    );
+  }
+  if (accessMode === 'code' && !isPrivate) {
+    throw new AppError('This access code is not valid', StatusCodes.BAD_REQUEST);
+  }
+
+  if (accessMode === 'code') {
+    const codeSnapshot = String(accessCodeSnapshot || '').trim();
+    if (!/^\d{6}$/.test(codeSnapshot)) {
+      throw new AppError('Invalid access code context', StatusCodes.BAD_REQUEST);
+    }
+
+    const finishedSameCode = await TestSession.findOne({
+      user: userId,
+      topic: topicId,
+      status: 'finished',
+      accessCode: codeSnapshot,
+    }).lean();
+    if (finishedSameCode) {
+      throw new AppError(
+        'Siz ushbu kirish kodi bilan bu testni allaqachon yakunlagansiz. Kompaniya yangi kod bersa, qayta ishlatishingiz mumkin.',
+        StatusCodes.FORBIDDEN
+      );
+    }
+
+    let active = await TestSession.findOne({ user: userId, topic: topicId, status: 'in_progress' });
+    if (active) {
+      await ensureNotExpired(active);
+      active = await TestSession.findById(active._id);
+      if (active && active.status === 'in_progress') {
+        return { session: active, topic };
+      }
+    }
+
+    const finishedAfterExpire = await TestSession.findOne({
+      user: userId,
+      topic: topicId,
+      status: 'finished',
+      accessCode: codeSnapshot,
+    }).lean();
+    if (finishedAfterExpire) {
+      throw new AppError(
+        'Siz ushbu kirish kodi bilan bu testni allaqachon yakunlagansiz. Kompaniya yangi kod bersa, qayta ishlatishingiz mumkin.',
+        StatusCodes.FORBIDDEN
+      );
+    }
+  }
+
+  const questions = await Question.find({ topic: topicId }).sort({ createdAt: 1 }).lean();
+  if (!questions.length) throw new AppError('No questions for this topic', StatusCodes.BAD_REQUEST);
+
+  const randomizedQuestions = shuffle(questions);
+  const sessionQuestions = randomizedQuestions.map((q) => {
+    const shuffledOptions = shuffle([q.correctAnswer, q.wrongAnswer1, q.wrongAnswer2, q.wrongAnswer3]);
+    return {
+      questionId: q._id,
+      prompt: q.question,
+      options: shuffledOptions,
+      correctAnswer: q.correctAnswer,
+    };
+  });
+
+  const durationSeconds = Math.max(0, Number(topic.minutes || 0)) * 60;
+  const startedAt = new Date();
+  const expiresAt = durationSeconds ? new Date(startedAt.getTime() + durationSeconds * 1000) : null;
+
+  const sessionPayload = {
+    user: userId,
+    topic: topicId,
+    status: 'in_progress',
+    currentIndex: 0,
+    score: 0,
+    total: sessionQuestions.length,
+    questions: sessionQuestions,
+    startedAt,
+    durationSeconds,
+    expiresAt,
+  };
+  if (accessMode === 'code' && accessCodeSnapshot) {
+    sessionPayload.accessCode = String(accessCodeSnapshot).trim();
+  }
+
+  const session = await TestSession.create(sessionPayload);
+
+  return { session, topic };
+}
+
+/** Kompaniya profili (nom + logo URL) — mobil uchun */
+async function getCompanyPublicById(companyId) {
+  if (!companyId) return null;
+  const u = await User.findById(companyId).select('name companyLogo role').lean();
+  if (!u || u.role !== 'company') return null;
+  return {
+    _id: u._id,
+    name: u.name,
+    companyLogo: u.companyLogo || null,
+  };
+}
+
+function buildSessionStartPayload(session, topic, companyMeta = null) {
+  const data = {
+    sessionId: session._id,
+    topic: {
+      _id: topic._id,
+      name: topic.name,
+      minutes: topic.minutes,
+      difficulty: topic.difficulty,
+    },
+    total: session.total,
+    expiresAt: session.expiresAt,
+    remainingSeconds: remainingSeconds(session),
+    current: publicQuestion(session, 0),
+  };
+  if (companyMeta) {
+    data.company = companyMeta;
+  }
+  return {
+    success: true,
+    message: 'Test started',
+    data,
+  };
+}
+
 function buildAdvice({ score, total }) {
   const safeTotal = Math.max(0, Number(total || 0));
   const safeScore = Math.max(0, Number(score || 0));
@@ -108,103 +251,6 @@ function buildAdvice({ score, total }) {
   };
 }
 
-function todayKeyUTC(d = new Date()) {
-  // YYYY-MM-DD in UTC (stable across devices)
-  const yyyy = d.getUTCFullYear();
-  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const dd = String(d.getUTCDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
-}
-
-async function grantRewardsIfNeeded(session) {
-  if (!session || session.status !== 'finished') return { granted: false };
-  if (session.rewardsGranted === true) return { granted: false };
-
-  const total = Math.max(0, Number(session.total || 0));
-  const correct = Math.max(0, Number(session.correctCount || 0));
-  const percent = total ? (correct / total) * 100 : 0;
-
-  // Rewards are only granted when the user scores >= 90%.
-  // Coins/score scale by question count:
-  // 10 questions => 1 coin + 2 score
-  // 20 questions => 2 coins + 4 score
-  // Formula: coin = floor(total/10), score = coin*2
-  const meetsThreshold = percent >= 90;
-  const coinsToGive = meetsThreshold ? Math.floor(total / 10) : 0;
-  const scoreToGive = meetsThreshold ? coinsToGive * 2 : 0;
-
-  const user = await User.findById(session.user);
-  if (!user) return { granted: false };
-
-  if (coinsToGive > 0) user.coins += coinsToGive;
-  if (scoreToGive > 0) user.score += scoreToGive;
-
-  await user.save();
-
-  session.rewardsGranted = true;
-  session.coinsAwarded = coinsToGive;
-  session.scoreAwarded = scoreToGive;
-  await session.save();
-
-  // Write transaction logs (best-effort)
-  try {
-    let topicSnap = { subjectId: null, topicName: null, subjectName: null };
-    try {
-      const tdoc = await Topic.findById(session.topic).populate('subject', 'name').lean();
-      if (tdoc) {
-        topicSnap.topicName = tdoc.name || null;
-        const sub = tdoc.subject;
-        if (sub && typeof sub === 'object') {
-          topicSnap.subjectId = sub._id || null;
-          topicSnap.subjectName = sub.name || null;
-        }
-      }
-    } catch {
-      // ignore snapshot failure
-    }
-
-    const pctRounded = Math.round(percent * 10) / 10;
-    const baseMeta = {
-      sessionId: session._id,
-      topicId: session.topic,
-      subjectId: topicSnap.subjectId,
-      topicName: topicSnap.topicName,
-      subjectName: topicSnap.subjectName,
-      percent: pctRounded,
-    };
-
-    const txs = [];
-    if (coinsToGive > 0) {
-      txs.push({
-        user: user._id,
-        kind: 'coin',
-        amount: coinsToGive,
-        reason: 'test_result',
-        meta: { ...baseMeta },
-      });
-    }
-    if (scoreToGive > 0) {
-      txs.push({
-        user: user._id,
-        kind: 'score',
-        amount: scoreToGive,
-        reason: 'test_result',
-        meta: { ...baseMeta },
-      });
-    }
-    if (txs.length) await WalletTransaction.insertMany(txs);
-  } catch {
-    // ignore logging failure
-  }
-
-  return {
-    granted: true,
-    coinsAwarded: coinsToGive,
-    scoreAwarded: scoreToGive,
-    user: { coins: user.coins, score: user.score, dailyFinishedDate: user.dailyFinishedDate, dailyFinishedCount: user.dailyFinishedCount },
-  };
-}
-
 async function ensureNotExpired(session) {
   if (session.status !== 'in_progress') return;
   if (!session.expiresAt) return;
@@ -215,14 +261,19 @@ async function ensureNotExpired(session) {
   finalizeSessionCounts(session);
   await session.save();
 
-  await grantRewardsIfNeeded(session);
+  await tryGrant80MilestoneOnce(session._id);
+  await grantFinishRewardsIfNeeded(session._id);
 }
 
-export const me = asyncHandler(async (req, res) => {
+export const me = asyncHandler(async (req, res, next) => {
+  const fresh = await ensureUserFriendIdFresh(req.user._id);
+  if (!fresh) return next(new AppError('Foydalanuvchi topilmadi', StatusCodes.NOT_FOUND));
+
   res.status(StatusCodes.OK).json({
     success: true,
     data: {
-      user: req.user.toJSON(),
+      /** `_id` — Mongo ID; do‘stlar uchun ko‘rsatish: `friendId` (10–16 raqam) */
+      user: fresh.toJSON(),
     },
   });
 });
@@ -236,12 +287,11 @@ export const listSubjects = asyncHandler(async (req, res) => {
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(100, Math.floor(limitRaw)) : 20;
   const skip = (page - 1) * limit;
 
-  const filter = {};
+  const filter = { $and: [onlyPublicOwnerFilter()] };
   if (qRaw) {
-    // Escape regex special chars to avoid ReDoS-like patterns from user input.
     const escaped = qRaw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const rx = new RegExp(escaped, 'i');
-    filter.$or = [{ name: rx }, { description: rx }];
+    filter.$and.push({ $or: [{ name: rx }, { description: rx }] });
   }
 
   const [total, subjects] = await Promise.all([
@@ -252,7 +302,12 @@ export const listSubjects = asyncHandler(async (req, res) => {
   const subjectIds = subjects.map((s) => s._id);
   const topicCounts = subjectIds.length
     ? await Topic.aggregate([
-        { $match: { subject: { $in: subjectIds } } },
+        {
+          $match: {
+            subject: { $in: subjectIds },
+            $or: [{ companyOwner: null }, { companyOwner: { $exists: false } }],
+          },
+        },
         { $group: { _id: '$subject', count: { $sum: 1 } } },
       ])
     : [];
@@ -281,7 +336,7 @@ export const listSubjects = asyncHandler(async (req, res) => {
   });
 });
 
-export const listTopicsBySubject = asyncHandler(async (req, res) => {
+export const listTopicsBySubject = asyncHandler(async (req, res, next) => {
   const { subjectId } = req.params;
   const qRaw = typeof req.query?.q === 'string' ? req.query.q.trim() : '';
   const pageRaw = typeof req.query?.page === 'string' ? Number(req.query.page) : Number(req.query?.page);
@@ -291,11 +346,17 @@ export const listTopicsBySubject = asyncHandler(async (req, res) => {
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(100, Math.floor(limitRaw)) : 20;
   const skip = (page - 1) * limit;
 
-  const filter = { subject: subjectId };
+  const subjectDoc = await Subject.findById(subjectId).select('companyOwner').lean();
+  if (!subjectDoc) return next(new AppError('Subject not found', StatusCodes.NOT_FOUND));
+  if (subjectDoc.companyOwner) {
+    return next(new AppError('Subject not found', StatusCodes.NOT_FOUND));
+  }
+
+  const filter = { $and: [{ subject: subjectId }, onlyPublicOwnerFilter()] };
   if (qRaw) {
     const escaped = qRaw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     const rx = new RegExp(escaped, 'i');
-    filter.$or = [{ name: rx }, { description: rx }];
+    filter.$and.push({ $or: [{ name: rx }, { description: rx }] });
   }
 
   const [total, topics] = await Promise.all([
@@ -337,62 +398,103 @@ export const listTopicsBySubject = asyncHandler(async (req, res) => {
   });
 });
 
-export const startTopic = asyncHandler(async (req, res, next) => {
-  const { topicId } = req.params;
+export const previewTopicByAccessCode = asyncHandler(async (req, res, next) => {
+  const code = String(req.body?.code || '').trim();
+  if (!/^\d{6}$/.test(code)) {
+    return next(new AppError('code must be 6 digits', StatusCodes.BAD_REQUEST));
+  }
 
-  const topic = await Topic.findById(topicId).lean();
-  if (!topic) return next(new AppError('Topic not found', StatusCodes.NOT_FOUND));
+  const invite = await TopicInviteCode.findOne({ code }).lean();
+  if (!invite) {
+    return next(new AppError('Invalid access code', StatusCodes.NOT_FOUND));
+  }
+  if (invite.closedAt) {
+    return next(new AppError('Bu test kompaniya tomonidan yopilgan.', StatusCodes.GONE));
+  }
 
-  const questions = await Question.find({ topic: topicId }).sort({ createdAt: 1 }).lean();
-  if (!questions.length) return next(new AppError('No questions for this topic', StatusCodes.BAD_REQUEST));
+  const topic = await Topic.findById(invite.topic).lean();
+  if (!topic) {
+    return next(new AppError('Topic not found', StatusCodes.NOT_FOUND));
+  }
 
-  // Randomize question order each time test starts
-  const randomizedQuestions = shuffle(questions);
+  const subject = await Subject.findById(topic.subject).select('name description companyOwner').lean();
+  if (!subject) {
+    return next(new AppError('Subject not found', StatusCodes.NOT_FOUND));
+  }
 
-  const sessionQuestions = randomizedQuestions.map((q) => {
-    const options = shuffle([q.correctAnswer, q.wrongAnswer1, q.wrongAnswer2, q.wrongAnswer3]);
-    return {
-      questionId: q._id,
-      prompt: q.question,
-      options,
-      correctAnswer: q.correctAnswer,
-    };
-  });
+  if (!subject.companyOwner) {
+    return next(new AppError('This access code is not valid', StatusCodes.BAD_REQUEST));
+  }
 
-  const durationSeconds = Math.max(0, Number(topic.minutes || 0)) * 60;
-  const startedAt = new Date();
-  const expiresAt = durationSeconds ? new Date(startedAt.getTime() + durationSeconds * 1000) : null;
+  const qCount = await Question.countDocuments({ topic: topic._id });
+  if (!qCount) {
+    return next(new AppError('No questions for this topic', StatusCodes.BAD_REQUEST));
+  }
 
-  const session = await TestSession.create({
+  const alreadyDone = await TestSession.findOne({
     user: req.user._id,
-    topic: topicId,
-    status: 'in_progress',
-    currentIndex: 0,
-    score: 0,
-    total: sessionQuestions.length,
-    questions: sessionQuestions,
-    startedAt,
-    durationSeconds,
-    expiresAt,
-  });
+    topic: topic._id,
+    status: 'finished',
+    accessCode: code,
+  }).lean();
+  if (alreadyDone) {
+    return next(
+      new AppError(
+        'Siz ushbu kirish kodi bilan bu testni allaqachon yakunlagansiz. Kompaniya yangi kod bersa, qayta urinib ko‘ring.',
+        StatusCodes.FORBIDDEN
+      )
+    );
+  }
 
-  res.status(StatusCodes.CREATED).json({
+  const questionCount = Math.max(0, Number(topic.questionCount) || 0) || qCount;
+
+  const companyMeta = await getCompanyPublicById(invite.company || subject.companyOwner);
+
+  res.status(StatusCodes.OK).json({
     success: true,
-    message: 'Test started',
     data: {
-      sessionId: session._id,
+      code,
+      company: companyMeta,
       topic: {
         _id: topic._id,
         name: topic.name,
+        description: topic.description || '',
         minutes: topic.minutes,
         difficulty: topic.difficulty,
+        questionCount,
       },
-      total: session.total,
-      expiresAt: session.expiresAt,
-      remainingSeconds: remainingSeconds(session),
-      current: publicQuestion(session, 0),
+      subject: {
+        _id: subject._id,
+        name: subject.name,
+        description: subject.description || '',
+      },
     },
   });
+});
+
+export const startTopic = asyncHandler(async (req, res) => {
+  const { session, topic } = await createTestSessionResponse(req.user._id, req.params.topicId, 'public');
+  res.status(StatusCodes.CREATED).json(buildSessionStartPayload(session, topic));
+});
+
+/** Kompaniya maxfiy mavzu — mobil ilovada `POST` + `{ "code": "123456" }` */
+export const startTopicWithAccessCode = asyncHandler(async (req, res, next) => {
+  const code = String(req.body?.code || '').trim();
+  if (!/^\d{6}$/.test(code)) {
+    return next(new AppError('code must be 6 digits', StatusCodes.BAD_REQUEST));
+  }
+  const invite = await TopicInviteCode.findOne({ code }).lean();
+  if (!invite) {
+    return next(new AppError('Invalid access code', StatusCodes.NOT_FOUND));
+  }
+  if (invite.closedAt) {
+    return next(new AppError('Bu test kompaniya tomonidan yopilgan.', StatusCodes.GONE));
+  }
+  const { session, topic } = await createTestSessionResponse(req.user._id, invite.topic, 'code', {
+    accessCode: invite.code,
+  });
+  const companyMeta = await getCompanyPublicById(invite.company);
+  res.status(StatusCodes.CREATED).json(buildSessionStartPayload(session, topic, companyMeta));
 });
 
 export const getSession = asyncHandler(async (req, res, next) => {
@@ -401,6 +503,15 @@ export const getSession = asyncHandler(async (req, res, next) => {
   if (!session) return next(new AppError('Session not found', StatusCodes.NOT_FOUND));
 
   await ensureNotExpired(session);
+
+  let companyMeta = null;
+  const topicLean = await Topic.findById(session.topic).select('subject').lean();
+  if (topicLean?.subject) {
+    const subLean = await Subject.findById(topicLean.subject).select('companyOwner').lean();
+    if (subLean?.companyOwner) {
+      companyMeta = await getCompanyPublicById(subLean.companyOwner);
+    }
+  }
 
   res.status(StatusCodes.OK).json({
     success: true,
@@ -421,6 +532,7 @@ export const getSession = asyncHandler(async (req, res, next) => {
         unansweredCount: session.unansweredCount,
       },
       current: session.status === 'in_progress' ? publicQuestion(session, session.currentIndex) : null,
+      ...(companyMeta ? { company: companyMeta } : {}),
     },
   });
 });
@@ -472,9 +584,10 @@ export const answerSession = asyncHandler(async (req, res, next) => {
 
   await session.save();
 
-  if (session.status === 'finished') {
-    await grantRewardsIfNeeded(session);
-  }
+  const milestone = await tryGrant80MilestoneOnce(session._id);
+  const finishRw = session.status === 'finished' ? await grantFinishRewardsIfNeeded(session._id) : null;
+
+  const snap = session.status === 'finished' ? await TestSession.findById(session._id).lean() : null;
 
   res.status(StatusCodes.OK).json({
     success: true,
@@ -489,6 +602,22 @@ export const answerSession = asyncHandler(async (req, res, next) => {
       correctCount: session.correctCount,
       wrongCount: session.wrongCount,
       unansweredCount: session.unansweredCount,
+      rewards: {
+        milestone80: milestone,
+        finish: finishRw,
+        sessionTotals:
+          snap && snap.status === 'finished'
+            ? {
+                milestoneCoinsAwarded: snap.milestoneCoinsAwarded || 0,
+                finishCoinsAwarded: snap.coinsAwarded || 0,
+                finishScoreAwarded: snap.scoreAwarded || 0,
+              }
+            : null,
+        balance: (() => {
+          const b = finishRw?.user ?? milestone?.user ?? null;
+          return b ? { coins: b.coins, score: b.score } : null;
+        })(),
+      },
     },
   });
 });
@@ -572,7 +701,10 @@ export const finishSession = asyncHandler(async (req, res, next) => {
   await session.save();
 
   const advice = buildAdvice({ score: session.score, total: session.total });
-  const reward = await grantRewardsIfNeeded(session);
+  const milestone = await tryGrant80MilestoneOnce(session._id);
+  const reward = await grantFinishRewardsIfNeeded(session._id);
+
+  const rx = await TestSession.findById(session._id).lean();
 
   return res.status(StatusCodes.OK).json({
     success: true,
@@ -590,10 +722,20 @@ export const finishSession = asyncHandler(async (req, res, next) => {
       statusKey: advice.status,
       finishedAt: session.finishedAt,
       rewards: {
+        milestone80: milestone,
+        finished: reward,
+        milestoneCoinsAwarded: rx?.milestoneCoinsAwarded || 0,
+        coinsAwardedFinish: rx?.coinsAwarded || 0,
+        scoreAwardedFinish: rx?.scoreAwarded || 0,
+        /** mobil uchun bir qatordan jami coin (jarayonda + yakunda) */
+        coinsAwardedTotal: (rx?.milestoneCoinsAwarded || 0) + (rx?.coinsAwarded || 0),
+        scoreAwardedTotal: rx?.scoreAwarded || 0,
         granted: reward.granted === true,
-        coinsAwarded: reward.coinsAwarded || 0,
-        scoreAwarded: reward.scoreAwarded || 0,
-        balance: reward.user ? { coins: reward.user.coins, score: reward.user.score } : null,
+        belowThreshold: reward.belowThreshold === true,
+        balance: (() => {
+          const u = reward.user ?? milestone.user;
+          return u ? { coins: u.coins, score: u.score } : null;
+        })(),
       },
     },
   });
@@ -614,7 +756,10 @@ export const getSessionResults = asyncHandler(async (req, res, next) => {
   finalizeSessionCounts(session);
   await session.save();
 
-  await grantRewardsIfNeeded(session);
+  await tryGrant80MilestoneOnce(session._id);
+  await grantFinishRewardsIfNeeded(session._id);
+
+  const rx = await TestSession.findById(session._id).lean();
 
   const advice = buildAdvice({ score: session.score, total: session.total });
 
@@ -647,9 +792,12 @@ export const getSessionResults = asyncHandler(async (req, res, next) => {
         isCorrect: q.isCorrect,
       })),
       rewards: {
-        rewardsGranted: session.rewardsGranted === true,
-        coinsAwarded: session.coinsAwarded || 0,
-        scoreAwarded: session.scoreAwarded || 0,
+        rewardsGranted: rx?.rewardsGranted === true,
+        milestoneCoinsAwarded: rx?.milestoneCoinsAwarded || 0,
+        coinsAwardedFinish: rx?.coinsAwarded || 0,
+        scoreAwardedFinish: rx?.scoreAwarded || 0,
+        coinsAwardedTotal: (rx?.milestoneCoinsAwarded || 0) + (rx?.coinsAwarded || 0),
+        scoreAwardedTotal: rx?.scoreAwarded || 0,
       },
     },
   });

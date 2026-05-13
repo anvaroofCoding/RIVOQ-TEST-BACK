@@ -8,9 +8,11 @@
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
     "build": "echo 'Build process'",
-    "test": "jest",
+    "test": "jest --passWithNoTests",
     "lint": "eslint src",
-    "seed": "node src/scripts/seedAdmin.js"
+    "seed": "node src/scripts/seedAdmin.js",
+    "test:otp": "node scripts/test-otp-flow.mjs",
+    "test:smtp": "node scripts/test-smtp.mjs"
   },
   "keywords": [
     "express",

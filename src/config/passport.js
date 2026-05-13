@@ -3,6 +3,7 @@ import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 import { User } from '../models/User.js';
 import { generateToken } from '../utils/jwt.js';
 import { config } from './index.js';
+import { allocateFriendIdIfMissing } from '../services/friendIdService.js';
 
 export const isGoogleOAuthEnabled = () => {
   const id = config.google.clientID && String(config.google.clientID).trim();
@@ -39,9 +40,12 @@ export const initializePassport = () => {
               await user.save();
             }
 
+            await allocateFriendIdIfMissing(user._id);
+            const fresh = await User.findById(user._id);
+
             const token = generateToken(user._id);
 
-            return done(null, { user: user.toJSON(), token });
+            return done(null, { user: fresh.toJSON(), token });
           } catch (error) {
             return done(error, null);
           }

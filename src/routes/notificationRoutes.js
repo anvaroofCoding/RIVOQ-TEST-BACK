@@ -4,6 +4,7 @@ import { authenticate } from '../middleware/auth.js';
 import { Notification } from '../models/Notification.js';
 import { TestSession } from '../models/TestSession.js';
 import { User } from '../models/User.js';
+import { setPrivateNoStore } from '../utils/httpCache.js';
 
 const router = express.Router();
 
@@ -47,6 +48,7 @@ async function computeDenseRankForUser(userId) {
  *         schema: { type: integer, minimum: 1, maximum: 100, default: 20 }
  */
 router.get('/notifications', authenticate, async (req, res) => {
+  setPrivateNoStore(res);
   const unread = String(req.query?.unread || '') === 'true';
   const pageRaw = typeof req.query?.page === 'string' ? Number(req.query.page) : Number(req.query?.page);
   const limitRaw = typeof req.query?.limit === 'string' ? Number(req.query.limit) : Number(req.query?.limit);
@@ -83,6 +85,7 @@ router.get('/notifications', authenticate, async (req, res) => {
  *       - bearerAuth: []
  */
 router.get('/notifications/unread-count', authenticate, async (req, res) => {
+  setPrivateNoStore(res);
   const count = await Notification.countDocuments({ user: req.user._id, readAt: null });
   res.status(StatusCodes.OK).json({ success: true, data: { unreadCount: count } });
 });
@@ -132,6 +135,7 @@ router.post('/notifications/read-all', authenticate, async (req, res) => {
  *       - bearerAuth: []
  */
 router.post('/notifications/sync', authenticate, async (req, res) => {
+  setPrivateNoStore(res);
   const now = new Date();
   const today = todayKeyLocal(now);
 

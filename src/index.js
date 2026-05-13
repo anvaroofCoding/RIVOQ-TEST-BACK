@@ -17,6 +17,7 @@ import { setupAdmin, ensureDefaultAdminPanelUser } from './admin/setup.js';
 
 import authRoutes from './routes/authRoutes.js';
 import testRoutes from './routes/testRoutes.js';
+import profileRoutes from './routes/profileRoutes.js';
 import walletRoutes from './routes/walletRoutes.js';
 import rankingRoutes from './routes/rankingRoutes.js';
 import notificationRoutes from './routes/notificationRoutes.js';
@@ -25,6 +26,7 @@ import aiAnalyzeRoutes from './routes/aiAnalyzeRoutes.js';
 import activityRoutes from './routes/activityRoutes.js';
 
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import { createMailer, smtpMissingEnvKeysForOtp } from './utils/email.js';
 
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection:', reason instanceof Error ? reason.stack : reason);
@@ -101,13 +103,22 @@ async function buildApp() {
     res.send(swaggerSpec);
   });
 
-  app.get('/health', (req, res) => {
-    res.json({
+  /** `/api/health` — BASE_URL `.../api` bo‘lsa ham tekshirish uchun (`/health` bilan bir xil). */
+  const sendHealthJson = (_req, res) => {
+    const smtpConfigured = !!createMailer();
+    const body = {
       status: 'ok',
       timestamp: new Date().toISOString(),
       environment: config.node_env,
-    });
-  });
+      smtpOtpConfigured: smtpConfigured,
+    };
+    if (!smtpConfigured) {
+      body.smtpOtpMissingEnv = smtpMissingEnvKeysForOtp();
+    }
+    res.json(body);
+  };
+  app.get('/health', sendHealthJson);
+  app.get('/api/health', sendHealthJson);
 
   app.get(['/api', '/api/'], (req, res) => {
     res.json({
@@ -126,6 +137,7 @@ async function buildApp() {
 
   app.use('/api/auth', authRoutes);
   app.use('/api', testRoutes);
+  app.use('/api', profileRoutes);
   app.use('/api', walletRoutes);
   app.use('/api', rankingRoutes);
   app.use('/api', notificationRoutes);

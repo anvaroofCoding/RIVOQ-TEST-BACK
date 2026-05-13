@@ -48,10 +48,60 @@ const userSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+    /** Oddiy sahifa rasmi URL (CDN yoki uploads) */
     avatar: {
       type: String,
       default: null,
     },
+
+    /** Ism (familiyadan ajratilgan, ixtiyoriy) */
+    firstName: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: 80,
+    },
+    lastName: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: 80,
+    },
+    /** Yoshi (faqat mobil profil uchun) */
+    age: {
+      type: Number,
+      default: null,
+      min: 7,
+      max: 130,
+    },
+    biography: {
+      type: String,
+      default: '',
+      trim: true,
+      maxlength: 2000,
+    },
+
+    /** Do‘stlarga ko‘rinadigan noyob ID (yangi: 10–16 raqam; eski yozuvlar boshqacha bo‘lishi mumkin) */
+    friendId: {
+      type: String,
+      default: null,
+      trim: true,
+      maxlength: 32,
+      unique: true,
+      sparse: true,
+    },
+
+    socialInstagram: { type: String, default: '', trim: true, maxlength: 500 },
+    socialFacebook: { type: String, default: '', trim: true, maxlength: 500 },
+    socialTelegram: { type: String, default: '', trim: true, maxlength: 500 },
+    socialX: { type: String, default: '', trim: true, maxlength: 500 },
+
+    /** Ijtimoiy havola qo‘yilganda 200 ta coin (bir marta, har kanal uchun) */
+    profileSocialInstagramBonusPaid: { type: Boolean, default: false },
+    profileSocialFacebookBonusPaid: { type: Boolean, default: false },
+    profileSocialTelegramBonusPaid: { type: Boolean, default: false },
+    profileSocialXBonusPaid: { type: Boolean, default: false },
+
     address: {
       street: String,
       city: String,
@@ -107,20 +157,28 @@ const userSchema = new mongoose.Schema(
     // Notifications helpers
     lastReminderDate: { type: String, default: null },
     lastKnownRank: { type: Number, default: null, min: 1 },
+
+    /** «Bugun faolman» uchun — kunlik mukofot (coins/score); `todayKeyUTC()` bilan taqqoslanadi */
+    dailyPresenceDate: { type: String, default: null, index: true },
   },
   { timestamps: true }
 );
 
-// Hash password before saving
+// Hash password va ism sinkronlari
 userSchema.pre('save', async function (next) {
-  if (!this.isModified('password')) return next();
-
   try {
+    if ((this.isModified('firstName') || this.isModified('lastName')) && (this.firstName || this.lastName)) {
+      const combined = `${(this.firstName || '').trim()} ${(this.lastName || '').trim()}`.trim();
+      if (combined.length >= 2) this.name = combined.slice(0, 50);
+    }
+
+    if (!this.isModified('password')) return next();
+
     const salt = await bcryptjs.genSalt(10);
     this.password = await bcryptjs.hash(this.password, salt);
-    next();
+    return next();
   } catch (error) {
-    next(error);
+    return next(error);
   }
 });
 
@@ -129,10 +187,11 @@ userSchema.methods.matchPassword = async function (enteredPassword) {
   return await bcryptjs.compare(enteredPassword, this.password);
 };
 
-// Don't return password in JSON
+// Don't return password in JSON; `friendId` doim kalit sifatida bo‘lsin (null bo‘lishi mumkin)
 userSchema.methods.toJSON = function () {
   const user = this.toObject();
   delete user.password;
+  user.friendId = user.friendId != null && String(user.friendId).trim() !== '' ? String(user.friendId).trim() : null;
   return user;
 };
 

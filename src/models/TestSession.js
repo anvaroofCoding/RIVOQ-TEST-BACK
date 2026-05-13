@@ -29,10 +29,23 @@ const testSessionSchema = new mongoose.Schema(
     wrongCount: { type: Number, default: 0, min: 0 },
     unansweredCount: { type: Number, default: 0, min: 0 },
 
+    /** Kod orqali kirish: sessiya yaratilgandagi 6 raqam (kod yangilanganda boshqa qiymat — qayta kirish mumkin) */
+    accessCode: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
     // Rewards (to avoid double-granting)
     rewardsGranted: { type: Boolean, default: false, index: true },
+    /** Jarayonda 80%+ chiqganda bir martalik coin (qiyinchilikka qarab) */
+    milestone80Granted: { type: Boolean, default: false, index: true },
+    milestoneCoinsAwarded: { type: Number, default: 0, min: 0 },
     coinsAwarded: { type: Number, default: 0, min: 0 },
     scoreAwarded: { type: Number, default: 0, min: 0 },
+
+    /** Mukofot logikasi yangilandi; `<2` — eski yozuvlar (faqat retrospect milestone ignore) */
+    rewardVersion: { type: Number, default: 2, min: 1 },
   },
   { timestamps: true }
 );
