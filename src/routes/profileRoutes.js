@@ -1,8 +1,42 @@
 import express from 'express';
 import { authenticate } from '../middleware/auth.js';
+import { profileAvatarUpload } from '../middleware/profileAvatarUpload.js';
 import * as profileController from '../controllers/profileController.js';
 
 const router = express.Router();
+
+/**
+ * @swagger
+ * /profile/me/avatar:
+ *   post:
+ *     tags: [Profile]
+ *     summary: Profil rasmini yuklash (galereya/kamera)
+ *     description: |
+ *       `multipart/form-data`. Bitta rasm: maydon nomlari `avatar`, `file` yoki `photo` dan bittasi.
+ *       Maks. 5 MB, formatlar: JPEG, PNG, WebP, GIF.
+ *     security:
+ *       - bearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               file:
+ *                 type: string
+ *                 format: binary
+ */
+router.post(
+  '/profile/me/avatar',
+  authenticate,
+  profileAvatarUpload.fields([
+    { name: 'avatar', maxCount: 1 },
+    { name: 'file', maxCount: 1 },
+    { name: 'photo', maxCount: 1 },
+  ]),
+  profileController.uploadProfileAvatar
+);
 
 /**
  * @swagger
@@ -37,7 +71,7 @@ router.get('/profile/me', authenticate, profileController.getMyProfile);
  *               lastName: { type: string }
  *               age: { type: integer, nullable: true, minimum: 7, maximum: 130 }
  *               biography: { type: string, maxLength: 2000 }
- *               avatar: { type: string, description: "Rasm URLi" }
+ *               avatar: { type: string, description: "Tashqi rasm URL yoki data URL (data:image/jpeg;base64,...). Katta fayl uchun POST /profile/me/avatar tavsiya." }
  *               phone: { type: string }
  *               socialInstagram: { type: string }
  *               socialFacebook: { type: string }

@@ -1,9 +1,13 @@
+import fs from 'fs/promises';
+import path from 'path';
+import crypto from 'crypto';
 import StatusCodes from 'http-status-codes';
 import AppError from '../utils/AppError.js';
 import { asyncHandler } from '../utils/validators.js';
 import { User } from '../models/User.js';
 import { WalletTransaction } from '../models/WalletTransaction.js';
 import { setPrivateNoStore } from '../utils/httpCache.js';
+import { allocateFriendIdIfMissing } from '../services/friendIdService.js';
 
 const SOCIAL_LINK_COIN_BONUS = 200;
 
@@ -118,6 +122,96 @@ async function grantPendingSocialRewards(user) {
   return true;
 }
 
+const DATA_IMAGE_URL = /^data:image\/(jpeg|jpg|png|webp|gif);base64,/i;
+
+function isOurHostedAvatar(url) {
+  return typeof url === 'string' && url.startsWith('/uploads/profile-avatars/');
+}
+
+async function unlinkOurHostedAvatar(publicPath) {
+  if (!isOurHostedAvatar(publicPath)) return;
+  const rel = publicPath.replace(/^\//, '');
+  const abs = path.join(process.cwd(), 'public', rel);
+  await fs.unlink(abs).catch(() => {});
+}
+
+async function persistAvatarFromDataUrl(userId, rawDataUrl) {
+  const normalized = String(rawDataUrl || '').trim().replace(/\s/g, '');
+  const m = /^data:image\/(jpeg|jpg|png|webp|gif);base64,(.+)$/i.exec(normalized);
+  if (!m) {
+    throw new AppError('Avatar uchun faqat JPEG, PNG, WebP yoki GIF data URL qabul qilinadi.', StatusCodes.BAD_REQUEST);
+  }
+  let buf;
+  try {
+    buf = Buffer.from(m[2], 'base64');
+  } catch {
+    throw new AppError('Avatar base64 noto‘g‘ri.', StatusCodes.BAD_REQUEST);
+  }
+  if (buf.length > 5 * 1024 * 1024) {
+    throw new AppError('Rasm juda katta (maksimal 5 MB).', StatusCodes.BAD_REQUEST);
+  }
+  if (buf.length < 32) {
+    throw new AppError('Rasm juda kichik yoki bo‘sh.', StatusCodes.BAD_REQUEST);
+  }
+
+  const sub = m[1].toLowerCase();
+  const ext = sub === 'png' ? '.png' : sub === 'webp' ? '.webp' : sub === 'gif' ? '.gif' : '.jpg';
+  const dir = path.join(process.cwd(), 'public', 'uploads', 'profile-avatars');
+  await fs.mkdir(dir, { recursive: true });
+  const fname = `${userId}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}${ext}`;
+  await fs.writeFile(path.join(dir, fname), buf);
+  return `/uploads/profile-avatars/${fname}`;
+}
+
+function absoluteAvatarUrl(req, publicPath) {
+  const host = req.get('host');
+  if (!host) return publicPath;
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'https')
+    .split(',')[0]
+    .trim();
+  return `${proto}://${host}${publicPath}`;
+}
+
+/** POST — galereya / kamera (multipart): `avatar`, `file` yoki `photo` kaliti bilan bitta rasm */
+export const uploadProfileAvatar = asyncHandler(async (req, res) => {
+  setPrivateNoStore(res);
+  const f = req.files?.avatar?.[0] || req.files?.file?.[0] || req.files?.photo?.[0];
+  if (!f) {
+    throw new AppError(
+      'Rasm fayli kerak: multipart/form-data, maydon nomi `avatar`, `file` yoki `photo`.',
+      StatusCodes.BAD_REQUEST
+    );
+  }
+
+  await allocateFriendIdIfMissing(req.user._id);
+  const uid = req.user._id;
+  const user = await User.findById(uid);
+  if (!user) {
+    await fs.unlink(f.path).catch(() => {});
+    throw new AppError('Foydalanuvchi topilmadi', StatusCodes.NOT_FOUND);
+  }
+
+  const publicPath = `/uploads/profile-avatars/${f.filename}`;
+  const prev = user.avatar;
+  user.avatar = publicPath;
+
+  const rewarded = await grantPendingSocialRewards(user);
+  if (!rewarded) await user.save();
+
+  if (prev && prev !== publicPath) await unlinkOurHostedAvatar(prev);
+
+  const refreshed = await User.findById(uid).lean();
+  res.status(StatusCodes.OK).json({
+    success: true,
+    message: 'Avatar yuklandi.',
+    data: {
+      avatar: publicPath,
+      avatarUrl: absoluteAvatarUrl(req, publicPath),
+      profile: sanitizeMyProfile(refreshed),
+    },
+  });
+});
+
 /** GET /profile/me */
 export const getMyProfile = asyncHandler(async (req, res) => {
   setPrivateNoStore(res);
@@ -126,10 +220,15 @@ export const getMyProfile = asyncHandler(async (req, res) => {
   const user = await User.findById(uid);
   await grantPendingSocialRewards(user);
   const refreshed = await User.findById(uid).lean();
+  const profile = sanitizeMyProfile(refreshed);
+  const data = { profile };
+  if (typeof profile?.avatar === 'string' && profile.avatar.startsWith('/uploads/')) {
+    data.avatarUrl = absoluteAvatarUrl(req, profile.avatar);
+  }
 
   res.status(StatusCodes.OK).json({
     success: true,
-    data: { profile: sanitizeMyProfile(refreshed) },
+    data,
   });
 });
 
@@ -174,7 +273,17 @@ export const patchMyProfile = asyncHandler(async (req, res) => {
 
   if (typeof body.biography === 'string') user.biography = body.biography.trim().slice(0, 2000);
   if (typeof body.avatar === 'string') {
-    user.avatar = body.avatar.trim().slice(0, 2048) || null;
+    const raw = body.avatar.trim();
+    if (!raw) {
+      user.avatar = null;
+    } else if (DATA_IMAGE_URL.test(raw)) {
+      const prev = user.avatar;
+      const stored = await persistAvatarFromDataUrl(req.user._id, raw);
+      user.avatar = stored;
+      if (prev && prev !== stored) await unlinkOurHostedAvatar(prev);
+    } else {
+      user.avatar = raw.slice(0, 2048);
+    }
   }
   if (typeof body.phone === 'string') {
     user.phone = body.phone.trim().slice(0, 40);
@@ -192,10 +301,16 @@ export const patchMyProfile = asyncHandler(async (req, res) => {
   if (!rewarded) await user.save();
 
   const refreshed = await User.findById(uid).lean();
+  const profile = sanitizeMyProfile(refreshed);
+  const data = { profile };
+  if (typeof profile?.avatar === 'string' && profile.avatar.startsWith('/uploads/')) {
+    data.avatarUrl = absoluteAvatarUrl(req, profile.avatar);
+  }
+
   res.status(StatusCodes.OK).json({
     success: true,
     message: 'Profil yangilandi.',
-    data: { profile: sanitizeMyProfile(refreshed) },
+    data,
   });
 });
 

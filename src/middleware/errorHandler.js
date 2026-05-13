@@ -1,6 +1,14 @@
 import StatusCodes from 'http-status-codes';
 
 export const errorHandler = (err, req, res, next) => {
+  if (err?.code === 'LIMIT_FILE_SIZE') {
+    return res.status(StatusCodes.BAD_REQUEST).json({
+      success: false,
+      statusCode: StatusCodes.BAD_REQUEST,
+      message: 'Rasm juda katta (maksimal 5 MB).',
+    });
+  }
+
   const statusCode = err.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
   const message = err.message || 'Internal Server Error';
 
