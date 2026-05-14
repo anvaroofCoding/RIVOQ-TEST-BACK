@@ -1,5 +1,20 @@
 import nodemailer from 'nodemailer';
+import dns from 'node:dns';
 import { config } from '../config/index.js';
+
+/**
+ * Render va boshqa bulutlarda `smtp.gmail.com` → IPv6; konteynerda `ENETUNREACH` bo‘lishi mumkin.
+ * Default: faqat IPv4 (`SMTP_FORCE_IPV4=false` bo‘lsa — tizim DNS tartibi).
+ */
+function smtpLookup(hostname, options, callback) {
+  const force =
+    process.env.SMTP_FORCE_IPV4 === undefined || String(process.env.SMTP_FORCE_IPV4).toLowerCase() !== 'false';
+  if (!force) {
+    dns.lookup(hostname, options, callback);
+    return;
+  }
+  dns.lookup(hostname, { family: 4 }, callback);
+}
 
 /** .env qiymatlarini Gmail uchun aqlli defaultlar bilan birlashtiramiz */
 function resolvedSmtpConfig() {
@@ -57,16 +72,26 @@ export function createMailer() {
     secure: port === 465,
     requireTLS: port === 587,
     auth: { user, pass },
+    lookup: smtpLookup,
     tls: {
       minVersion: 'TLSv1.2',
       rejectUnauthorized: true,
     },
+    /** Render / sekin SMTP — cheksiz kutmaslik (ETIMEDOUT uchun biroz yuqori) */
+    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 25_000,
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 20_000,
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 35_000,
   });
 }
 
 function otpConsoleFallbackAllowed() {
   if (config.node_env !== 'production') return true;
   return String(process.env.ALLOW_OTP_WITHOUT_SMTP || '').toLowerCase() === 'true';
+}
+
+/** OTP email yuborilishi mumkinmi (SMTP yoki dev konsol fallback) */
+export function isOtpEmailConfiguredOrDevFallback() {
+  return !!createMailer() || otpConsoleFallbackAllowed();
 }
 
 function formatMailerError(err) {
@@ -118,6 +143,29 @@ export async function sendOtpEmail({ to, code }) {
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error(formatMailerError(err));
-    throw new Error(`Email could not be sent (${err?.responseCode || err?.code || 'SMTP'}). Check SMTP credentials / App password.`);
+    const hint =
+      /ENETUNREACH|IPv6|ESOCKET/i.test(String(err?.message || err?.code || ''))
+        ? ' Render/bulutda IPv6 ulanmasa: SMTP_FORCE_IPV4=true (default) qoldiring yoki SMTP_HOST ni provayder IPv4 hostname bilan tekshiring.'
+        : '';
+    throw new Error(
+      `Email could not be sent (${err?.responseCode || err?.code || 'SMTP'}). Check SMTP credentials / App password.${hint}`
+    );
+  }
+}
+
+/**
+ * `sendMail` ni maks. `timeoutMs` ichida tugatish (mobil fetch timeout bilan moslash uchun ixtiyoriy).
+ * @returns {{ ok: true } | { ok: false, error: Error }}
+ */
+export async function sendOtpEmailWithTimeout({ to, code, timeoutMs = 25_000 }) {
+  const ms = Math.max(3000, Math.min(Number(timeoutMs) || 25_000, 60_000));
+  try {
+    await Promise.race([
+      sendOtpEmail({ to, code }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('SMTP send timeout')), ms)),
+    ]);
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err };
   }
 }

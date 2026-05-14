@@ -5,7 +5,7 @@ import { generateToken } from '../utils/jwt.js';
 import crypto from 'crypto';
 import StatusCodes from 'http-status-codes';
 import AppError from '../utils/AppError.js';
-import { sendOtpEmail } from '../utils/email.js';
+import { sendOtpEmail, isOtpEmailConfiguredOrDevFallback } from '../utils/email.js';
 import { allocateFriendIdIfMissing } from '../services/friendIdService.js';
 
 /**
@@ -191,6 +191,13 @@ export const requestEmailCode = asyncHandler(async (req, res) => {
     return res.status(400).json({ success: false, message: 'email is required' });
   }
 
+  if (!isOtpEmailConfiguredOrDevFallback()) {
+    throw new AppError(
+      'Email orqali kod yuborish uchun serverda SMTP sozlanmagan. Render → Environment: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM.',
+      StatusCodes.SERVICE_UNAVAILABLE
+    );
+  }
+
   let user = await User.findOne({ email });
   if (!user) {
     user = await User.create({
@@ -210,35 +217,35 @@ export const requestEmailCode = asyncHandler(async (req, res) => {
   user.emailOtpLastSentAt = new Date(now);
   await user.save();
 
-  try {
-    await sendOtpEmail({ to: email, code });
-  } catch (err) {
-    await User.updateOne(
-      { _id: user._id },
-      {
-        $set: {
-          emailOtpHash: null,
-          emailOtpExpiresAt: null,
-          emailOtpLastSentAt: null,
-        },
-      }
-    ).catch(() => {});
-    console.error('[request-email-code]', err?.message || err);
-    throw new AppError(
-      err?.message ||
-        'Emailga kod yuborilmadi — serverda SMTP/Gmail tekshiring yoki ilova backend manziliga ulanib bo‘lmayapti.',
-      StatusCodes.SERVICE_UNAVAILABLE
-    );
-  }
-
-  return res.status(200).json({
+  const userId = user._id;
+  res.status(200).json({
     success: true,
-    message: 'Verification code sent',
+    message: 'Tasdiqlash kodi yaratildi; pochta yuborilmoqda. Bir necha soniya kuting.',
     data: {
       email,
       expiresInSeconds: 600,
+      /** Mobil: `queued` — HTTP darhol qaytadi, SMTP fononda */
+      emailDelivery: 'queued',
     },
   });
+
+  void (async () => {
+    try {
+      await sendOtpEmail({ to: email, code });
+    } catch (err) {
+      console.error('[request-email-code]', err?.message || err);
+      await User.updateOne(
+        { _id: userId },
+        {
+          $set: {
+            emailOtpHash: null,
+            emailOtpExpiresAt: null,
+            emailOtpLastSentAt: null,
+          },
+        }
+      ).catch(() => {});
+    }
+  })().catch((e) => console.error('[request-email-code-bg]', e?.message || e));
 });
 
 export const verifyEmailCode = asyncHandler(async (req, res) => {

@@ -138,6 +138,10 @@ router.get('/dev-token', authController.devToken);
  *   post:
  *     tags: [Auth]
  *     summary: Request 6-digit email login code
+ *     description: |
+ *       HTTP darhol `200` qaytadi (`data.emailDelivery: queued`); SMTP yuborish fononda.
+ *       SMTP xato bo‘lsa OTP bekor qilinadi — foydalanuvchi qayta «kod yuborish»ni bosadi.
+ *       Productionda SMTP sozlanmagan bo‘lsa `503`.
  *     security: []
  *     requestBody:
  *       required: true
