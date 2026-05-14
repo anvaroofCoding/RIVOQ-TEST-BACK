@@ -824,7 +824,10 @@ export const listMySessions = asyncHandler(async (req, res) => {
         startedAt: s.startedAt,
         expiresAt: s.expiresAt,
         finishedAt: s.finishedAt,
+        completedAt: s.finishedAt || s.createdAt,
         createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        durationSeconds: s.durationSeconds,
       })),
     },
   });
@@ -877,8 +880,11 @@ export const listSessionHistory = asyncHandler(async (req, res) => {
               wrongCount: 1,
               unansweredCount: 1,
               startedAt: 1,
+              expiresAt: 1,
               finishedAt: 1,
+              durationSeconds: 1,
               createdAt: 1,
+              updatedAt: 1,
             },
           },
         ],
@@ -894,6 +900,8 @@ export const listSessionHistory = asyncHandler(async (req, res) => {
     const safeTotal = Math.max(0, Number(s.total || 0));
     const safeCorrect = Math.max(0, Number(s.correctCount || 0));
     const pct = safeTotal ? Math.round((safeCorrect / safeTotal) * 1000) / 10 : 0;
+    const finishedRaw = s.finishedAt || null;
+    const finishedDisplay = finishedRaw || s.createdAt || null;
     return {
       sessionId: s._id,
       topicId: s.topicId,
@@ -905,7 +913,14 @@ export const listSessionHistory = asyncHandler(async (req, res) => {
       unansweredCount: s.unansweredCount,
       percent: pct,
       startedAt: s.startedAt,
-      finishedAt: s.finishedAt || s.createdAt,
+      expiresAt: s.expiresAt || null,
+      /** UI uchun yakun vaqti (eski yozuvlarda `finishedAt` bo‘sh bo‘lsa `createdAt`) */
+      finishedAt: finishedDisplay,
+      /** DB dagi `finishedAt` (yakunlash bosqichida yozilgan; bo‘sh bo‘lishi mumkin) */
+      finishedAtRecorded: finishedRaw,
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      durationSeconds: s.durationSeconds ?? 0,
     };
   });
 
@@ -988,6 +1003,10 @@ export const getSessionHistoryDetail = asyncHandler(async (req, res, next) => {
         startedAt: session.startedAt,
         expiresAt: session.expiresAt,
         finishedAt: session.finishedAt,
+        completedAt: session.finishedAt || session.createdAt,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        durationSeconds: session.durationSeconds,
         correctCount: session.correctCount,
         wrongCount: session.wrongCount,
         unansweredCount: session.unansweredCount,
