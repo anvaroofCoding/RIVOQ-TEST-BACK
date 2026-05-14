@@ -527,6 +527,8 @@ export const getSession = asyncHandler(async (req, res, next) => {
         expiresAt: session.expiresAt,
         remainingSeconds: remainingSeconds(session),
         finishedAt: session.finishedAt,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
         correctCount: session.correctCount,
         wrongCount: session.wrongCount,
         unansweredCount: session.unansweredCount,
@@ -824,7 +826,8 @@ export const listMySessions = asyncHandler(async (req, res) => {
         startedAt: s.startedAt,
         expiresAt: s.expiresAt,
         finishedAt: s.finishedAt,
-        completedAt: s.finishedAt || s.createdAt,
+        /** Faqat `finished` uchun yakun sanasi (UI); jarayonda `null` */
+        completedAt: s.status === 'finished' ? s.finishedAt || s.createdAt : null,
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
         durationSeconds: s.durationSeconds,
@@ -1002,8 +1005,10 @@ export const getSessionHistoryDetail = asyncHandler(async (req, res, next) => {
         total: session.total,
         startedAt: session.startedAt,
         expiresAt: session.expiresAt,
-        finishedAt: session.finishedAt,
-        completedAt: session.finishedAt || session.createdAt,
+        /** Yakunlangan test sanasi (eski yozuvlarda `finishedAt` bo‘sh bo‘lsa `createdAt`) */
+        finishedAt: session.finishedAt || session.createdAt,
+        /** DB dagi `finishedAt` (null bo‘lishi mumkin) */
+        finishedAtRecorded: session.finishedAt,
         createdAt: session.createdAt,
         updatedAt: session.updatedAt,
         durationSeconds: session.durationSeconds,

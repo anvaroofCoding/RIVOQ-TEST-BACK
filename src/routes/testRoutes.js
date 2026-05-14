@@ -158,7 +158,9 @@ router.post('/topics/:topicId/start', authenticate, testController.startTopic);
  *   get:
  *     tags: [Test]
  *     summary: Finished tests history (list)
- *     description: Paginated list of finished sessions with topic name, score, and timestamps.
+ *     description: |
+ *       Paginated finished sessions. Sanalar: `startedAt`, `expiresAt`, `finishedAt` (yakun vaqti — eski yozuvlar uchun `createdAt` fallback),
+ *       `finishedAtRecorded` (DB dagi `finishedAt`), `createdAt`, `updatedAt`, `durationSeconds`.
  *     security:
  *       - bearerAuth: []
  *     parameters:
