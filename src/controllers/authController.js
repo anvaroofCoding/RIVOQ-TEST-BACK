@@ -5,7 +5,7 @@ import { generateToken } from '../utils/jwt.js';
 import crypto from 'crypto';
 import StatusCodes from 'http-status-codes';
 import AppError from '../utils/AppError.js';
-import { sendOtpEmail, isOtpEmailConfiguredOrDevFallback } from '../utils/email.js';
+import { sendOtpEmail, isOtpEmailConfiguredOrDevFallback, getPublicOtpEmailErrorMessage } from '../utils/email.js';
 import { allocateFriendIdIfMissing } from '../services/friendIdService.js';
 
 /**
@@ -251,11 +251,7 @@ export const requestEmailCode = asyncHandler(async (req, res) => {
       }
     ).catch(() => {});
     console.error('[request-email-code]', err?.message || err);
-    throw new AppError(
-      err?.message ||
-        'Emailga kod yuborilmadi — SMTP (Render Environment) yoki tarmoqni tekshiring.',
-      StatusCodes.SERVICE_UNAVAILABLE
-    );
+    throw new AppError(getPublicOtpEmailErrorMessage(err), StatusCodes.SERVICE_UNAVAILABLE);
   }
 });
 

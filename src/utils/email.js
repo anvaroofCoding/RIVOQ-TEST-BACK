@@ -1,5 +1,6 @@
 import nodemailer from 'nodemailer';
 import dns from 'node:dns';
+import dnsPromises from 'node:dns/promises';
 import { config } from '../config/index.js';
 
 /**
@@ -58,6 +59,58 @@ export function smtpMissingEnvKeysForOtp() {
   return otpMissingParts(c);
 }
 
+function connectionTimeouts() {
+  return {
+    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 25_000,
+    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 20_000,
+    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 35_000,
+  };
+}
+
+/**
+ * SMTP ulanish: domen bo‘lsa va IPv4 majbur bo‘lsa — `resolve4` bilan IP ga ulanamiz,
+ * TLS SNI uchun `servername` = asl domen (Gmail sertifikati).
+ */
+async function smtpResolveConnectTarget(hostname) {
+  if (!hostname || /^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) {
+    return { connectHost: hostname, servername: undefined };
+  }
+  const force =
+    process.env.SMTP_FORCE_IPV4 === undefined || String(process.env.SMTP_FORCE_IPV4).toLowerCase() !== 'false';
+  if (!force) {
+    return { connectHost: hostname, servername: undefined };
+  }
+  try {
+    const v4 = await dnsPromises.resolve4(hostname);
+    if (v4?.length) {
+      return { connectHost: v4[0], servername: hostname };
+    }
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn(`[SMTP] resolve4(${hostname}) xato, domen bilan davom:`, e?.message || e);
+  }
+  return { connectHost: hostname, servername: undefined };
+}
+
+function baseTransportOptions(c, connectHost, servername) {
+  const port = c.port;
+  const useLookup = String(connectHost) === String(c.host);
+  return {
+    host: connectHost,
+    port,
+    secure: port === 465,
+    requireTLS: port === 587,
+    auth: { user: c.user, pass: c.pass },
+    ...(useLookup ? { lookup: smtpLookup } : {}),
+    tls: {
+      minVersion: 'TLSv1.2',
+      rejectUnauthorized: true,
+      ...(servername ? { servername } : {}),
+    },
+    ...connectionTimeouts(),
+  };
+}
+
 export function createMailer() {
   const c = resolvedSmtpConfig();
   const { host, port, user, pass } = c;
@@ -66,22 +119,7 @@ export function createMailer() {
     return null;
   }
 
-  return nodemailer.createTransport({
-    host,
-    port,
-    secure: port === 465,
-    requireTLS: port === 587,
-    auth: { user, pass },
-    lookup: smtpLookup,
-    tls: {
-      minVersion: 'TLSv1.2',
-      rejectUnauthorized: true,
-    },
-    /** Render / sekin SMTP — cheksiz kutmaslik (ETIMEDOUT uchun biroz yuqori) */
-    connectionTimeout: Number(process.env.SMTP_CONNECTION_TIMEOUT_MS) || 25_000,
-    greetingTimeout: Number(process.env.SMTP_GREETING_TIMEOUT_MS) || 20_000,
-    socketTimeout: Number(process.env.SMTP_SOCKET_TIMEOUT_MS) || 35_000,
-  });
+  return nodemailer.createTransport(baseTransportOptions(c, host, undefined));
 }
 
 function otpConsoleFallbackAllowed() {
@@ -104,14 +142,25 @@ function formatMailerError(err) {
   return `[SMTP xato] ${code ? `code=${code} ` : ''}${msg}.${gmailHint}`;
 }
 
+/** Mobil UI — texnik inglizcha matnni emas, qisqa o‘zbekcha */
+export function getPublicOtpEmailErrorMessage(err) {
+  const m = `${err?.message || ''} ${err?.code || ''} ${err?.responseCode || ''}`;
+  if (/535|Invalid login|EAUTH|EENVELOPE|authentication failed/i.test(m)) {
+    return 'Gmail: SMTP_USER va App password (16 belgi) noto‘g‘ri yoki hisob bloklangan.';
+  }
+  if (/ETIMEDOUT|ECONNRESET|ENOTFOUND|ENETUNREACH|ESOCKET|ETLS|ECONNREFUSED|certificate/i.test(m)) {
+    return 'Pochta serveriga ulanib bo‘lmadi. Internetni va Render’da SMTP (host, port 587) sozlamalarini tekshiring.';
+  }
+  return 'Email yuborilmadi. Bir ozdan keyin qayta «Kodni yuborish»ni bosing.';
+}
+
 export async function sendOtpEmail({ to, code }) {
   const c = resolvedSmtpConfig();
   const fromRaw = process.env.EMAIL_FROM?.trim() || 'no-reply@rivoq.local';
-  const subject = 'Your login code';
-  const text = `Your login code: ${code}\n\nThis code will expire in 10 minutes.`;
+  const subject = 'RIVIQ — kirish kodi';
+  const text = `Kirishingiz uchun kod: ${code}\n\nKod 10 daqiqa amal qiladi.`;
 
-  const transporter = createMailer();
-  if (!transporter) {
+  if (!createMailer()) {
     const miss = otpMissingParts(c).join(', ') || '(nomalum)';
     if (otpConsoleFallbackAllowed()) {
       // eslint-disable-next-line no-console
@@ -137,19 +186,19 @@ export async function sendOtpEmail({ to, code }) {
     }
   }
 
+  const { connectHost, servername } = await smtpResolveConnectTarget(c.host);
+  // eslint-disable-next-line no-console
+  console.log(`[OTP] SMTP ulanish: host=${connectHost}${servername ? ` tlsServername=${servername}` : ''} port=${c.port}`);
+
+  const transporter = nodemailer.createTransport(baseTransportOptions(c, connectHost, servername));
+
   try {
     await transporter.sendMail({ from, to, subject, text });
     return { delivered: true };
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error(formatMailerError(err));
-    const hint =
-      /ENETUNREACH|IPv6|ESOCKET/i.test(String(err?.message || err?.code || ''))
-        ? ' Render/bulutda IPv6 ulanmasa: SMTP_FORCE_IPV4=true (default) qoldiring yoki SMTP_HOST ni provayder IPv4 hostname bilan tekshiring.'
-        : '';
-    throw new Error(
-      `Email could not be sent (${err?.responseCode || err?.code || 'SMTP'}). Check SMTP credentials / App password.${hint}`
-    );
+    throw err;
   }
 }
 
