@@ -218,34 +218,45 @@ export const requestEmailCode = asyncHandler(async (req, res) => {
   await user.save();
 
   const userId = user._id;
-  res.status(200).json({
-    success: true,
-    message: 'Tasdiqlash kodi yaratildi; pochta yuborilmoqda. Bir necha soniya kuting.',
-    data: {
-      email,
-      expiresInSeconds: 600,
-      /** Mobil: `queued` — HTTP darhol qaytadi, SMTP fononda */
-      emailDelivery: 'queued',
-    },
-  });
 
-  void (async () => {
-    try {
-      await sendOtpEmail({ to: email, code });
-    } catch (err) {
-      console.error('[request-email-code]', err?.message || err);
-      await User.updateOne(
-        { _id: userId },
-        {
-          $set: {
-            emailOtpHash: null,
-            emailOtpExpiresAt: null,
-            emailOtpLastSentAt: null,
-          },
-        }
-      ).catch(() => {});
-    }
-  })().catch((e) => console.error('[request-email-code-bg]', e?.message || e));
+  try {
+    const r = await sendOtpEmail({ to: email, code });
+    const devConsole = r?.dev === true;
+
+    return res.status(200).json({
+      success: true,
+      message: devConsole
+        ? 'Tasdiqlash kodi yaratildi (dev: kod server konsolida).'
+        : 'Tasdiqlash kodi email manzilingizga yuborildi.',
+      data: {
+        email,
+        expiresInSeconds: 600,
+        /** `sent` — SMTP bilan yuborildi; `console` — faqat dev, kod logda */
+        emailDelivery: devConsole ? 'console' : 'sent',
+        /** Frontend: shu matnni ko‘rsating */
+        userHint: devConsole
+          ? 'Ishlab chiqish rejimi: SMTP yo‘q — kod backend terminalida.'
+          : '2–3 daqiqa ichida pochtani tekshiring. Spam / Reklama ham qarang. Kelmasa «Kodni qayta yuborish».',
+      },
+    });
+  } catch (err) {
+    await User.updateOne(
+      { _id: userId },
+      {
+        $set: {
+          emailOtpHash: null,
+          emailOtpExpiresAt: null,
+          emailOtpLastSentAt: null,
+        },
+      }
+    ).catch(() => {});
+    console.error('[request-email-code]', err?.message || err);
+    throw new AppError(
+      err?.message ||
+        'Emailga kod yuborilmadi — SMTP (Render Environment) yoki tarmoqni tekshiring.',
+      StatusCodes.SERVICE_UNAVAILABLE
+    );
+  }
 });
 
 export const verifyEmailCode = asyncHandler(async (req, res) => {

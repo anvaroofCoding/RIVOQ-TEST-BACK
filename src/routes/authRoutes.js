@@ -139,9 +139,8 @@ router.get('/dev-token', authController.devToken);
  *     tags: [Auth]
  *     summary: Request 6-digit email login code
  *     description: |
- *       HTTP darhol `200` qaytadi (`data.emailDelivery: queued`); SMTP yuborish fononda.
- *       SMTP xato bo‘lsa OTP bekor qilinadi — foydalanuvchi qayta «kod yuborish»ni bosadi.
- *       Productionda SMTP sozlanmagan bo‘lsa `503`.
+ *       SMTP bilan **yuborish tugaguncha** kutadi: muvaffaqiyatda `200`, `data.emailDelivery`: `sent` yoki (dev) `console`.
+ *       SMTP xato bo‘lsa `503`, OTP saqlanmaydi (bekor).
  *     security: []
  *     requestBody:
  *       required: true
