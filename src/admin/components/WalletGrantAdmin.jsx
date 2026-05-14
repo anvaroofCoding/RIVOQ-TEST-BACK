@@ -173,7 +173,7 @@ export default function WalletGrantAdmin() {
       <Text mb="xl" color="grey60">
         Foydalanuvchini tanlang, coin va score kiriting.
         <br />
-        <strong>Admin</strong> yoki <strong>kompaniya</strong> akkaunti. Har bir operatsiya{' '}
+        <strong>Faqat admin</strong> akkaunti. Har bir operatsiya{' '}
         <code>admin_wallet_grant</code> sifatida wallet tarixiga yoziladi.
       </Text>
 

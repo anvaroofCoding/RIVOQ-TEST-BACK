@@ -214,6 +214,51 @@ router.get('/sessions/:sessionId', authenticate, testController.getSession);
 
 /**
  * @swagger
+ * /sessions/{sessionId}/notify-company-test-tab-leave:
+ *   post:
+ *     tags: [Test]
+ *     summary: Kompaniya testida ekrandan chiqish haqida kompaniyaga xabar (faqat kodli test)
+ *     description: |
+ *       Mobil: `document.visibility` / app background — foydalanuvchi testdan chiqib ketgan vaqt **kamida 1 soniya**
+ *       bo‘lgach qaytganda chaqiring. **Faqat** `POST /topics/start-with-code` orqali boshlangan sessiya uchun ishlaydi;
+ *       bildirishnoma **faqat** ushbu testni ochgan kompaniya akkauntiga (`role=company`) ketadi.
+ *       Bir xil sessiyada spam oldini olish: ~90 soniyada bir marta.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: sessionId
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [hiddenDurationMs]
+ *             properties:
+ *               hiddenDurationMs:
+ *                 type: number
+ *                 description: Yashirin/hidden holat davomiyligi (ms), kamida 1000
+ *                 minimum: 1000
+ *                 example: 1500
+ *     responses:
+ *       201:
+ *         description: Kompaniyaga notification yaratildi
+ *       200:
+ *         description: cooldown — yangi notification yuborilmadi
+ *       400:
+ *         description: Jamoat testi yoki hiddenDurationMs noto‘g‘ri
+ */
+router.post(
+  '/sessions/:sessionId/notify-company-test-tab-leave',
+  authenticate,
+  testController.notifyCompanyTestTabLeave
+);
+
+/**
+ * @swagger
  * /sessions:
  *   get:
  *     tags: [Test]

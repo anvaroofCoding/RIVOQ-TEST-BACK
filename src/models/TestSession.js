@@ -46,6 +46,9 @@ const testSessionSchema = new mongoose.Schema(
 
     /** Mukofot logikasi yangilandi; `<2` — eski yozuvlar (faqat retrospect milestone ignore) */
     rewardVersion: { type: Number, default: 2, min: 1 },
+
+    /** Kompaniya testi: tab/background — kompaniyaga oxirgi bildirishnoma yuborilgan vaqt (spam oldini olish) */
+    lastCompanyTabViolationNotifiedAt: { type: Date, default: null },
   },
   { timestamps: true }
 );

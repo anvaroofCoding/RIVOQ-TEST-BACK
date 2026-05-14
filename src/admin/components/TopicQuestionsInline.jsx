@@ -61,7 +61,7 @@ export default function TopicQuestionsInline(props) {
         resourceId: props.resource.id,
         recordId,
         actionName: 'updateQuestion',
-        data: { questionId: editingId, ...edit },
+        data: { questionId: String(editingId), ...edit },
       })
       if (res?.data?.notice) notice(res.data.notice)
       await load()
@@ -82,7 +82,7 @@ export default function TopicQuestionsInline(props) {
         resourceId: props.resource.id,
         recordId,
         actionName: 'deleteQuestion',
-        data: { questionId: id },
+        data: { questionId: String(id) },
       })
       if (res?.data?.notice) notice(res.data.notice)
       await load()

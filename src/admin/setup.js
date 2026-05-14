@@ -136,11 +136,22 @@ export const setupAdmin = async (app) => {
 
     const onlyCompany = ({ currentAdmin }) => currentAdmin?.role === 'company';
 
+    /** AdminJS reference maydonlari ba’zan `{ _id }` obyekt — `String()` bilan solishtirish xato */
+    const normalizeRefId = (value) => {
+      if (value == null || value === '') return '';
+      if (typeof value === 'object') {
+        if (value._id != null) return String(value._id);
+        if (value.id != null) return String(value.id);
+        if (typeof value.toHexString === 'function') return String(value.toHexString());
+      }
+      return String(value);
+    };
+
     /** Test kirish kodlari yozuvi faqat o‘sha kompaniyaga tegishli */
     const canCompanyOwnInviteRecord = ({ currentAdmin, record }) => {
       if (!record) return false;
       if (currentAdmin?.role !== 'company') return false;
-      return String(record.params?.company || '') === String(currentAdmin.id);
+      return normalizeRefId(record.params?.company) === String(currentAdmin.id);
     };
 
     const adminOrCompany = ({ currentAdmin }) =>
@@ -174,14 +185,14 @@ export const setupAdmin = async (app) => {
       if (!record) return false;
       if (currentAdmin?.role === 'admin') return true;
       if (currentAdmin?.role !== 'company') return false;
-      return String(record.params?.companyOwner || '') === String(currentAdmin.id);
+      return normalizeRefId(record.params?.companyOwner) === String(currentAdmin.id);
     };
 
     const canAccessCompanyTopic = ({ currentAdmin, record }) => {
       if (!record) return false;
       if (currentAdmin?.role === 'admin') return true;
       if (currentAdmin?.role !== 'company') return false;
-      return String(record.params?.companyOwner || '') === String(currentAdmin.id);
+      return normalizeRefId(record.params?.companyOwner) === String(currentAdmin.id);
     };
 
     const canGenerateTopicAccessCode = ({ currentAdmin, record }) => {
@@ -1097,7 +1108,7 @@ export const setupAdmin = async (app) => {
               },
               companyId: {
                 description:
-                  'Kompaniya akkauntining MongoDB ID si: qaysi kompaniyaga tegishli oddiy foydalanuvchi ekanini ko‘rsatadi. Kompaniya o‘zi foydalanuvchi yaratganda avtomatik to‘ldiriladi; kompaniya (role=company) akkauntida bo‘sh qoldiring.',
+                  'Kompaniya akkauntining MongoDB ID si: qaysi kompaniyaga tegishli oddiy foydalanuvchi ekanini ko‘rsatadi. Foydalanuvchini faqat admin yaratadi — shu maydonni to‘g‘ri kompaniya ID bilan to‘ldiring; kompaniya (role=company) akkauntida tahrirlashda bo‘sh qoldiring.',
                 reference: 'User',
                 props: {
                   placeholder: 'Faqat oddiy user (jamoa a’zosi) uchun',
@@ -1124,8 +1135,7 @@ export const setupAdmin = async (app) => {
                   r = await companyNewBefore(r, context);
                   return hashPassword(r);
                 },
-                isAccessible: ({ currentAdmin }) =>
-                  currentAdmin?.role === 'admin' || currentAdmin?.role === 'company',
+                isAccessible: onlyAdmin,
               },
               show: { isAccessible: canCompanyAccessUserRecord },
               edit: {
@@ -1143,7 +1153,7 @@ export const setupAdmin = async (app) => {
                 icon: 'Award',
                 label: 'Coin va score berish',
                 component: walletGrantAdminComponent,
-                isAccessible: adminOrCompany,
+                isAccessible: onlyAdmin,
                 showInDrawer: false,
                 handler: async () => ({ meta: {} }),
               },

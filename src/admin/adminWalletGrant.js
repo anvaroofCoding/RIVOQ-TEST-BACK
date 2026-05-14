@@ -9,9 +9,9 @@ function currentAdmin(req) {
   return req.session?.adminUser || null;
 }
 
-/** AdminJS akkaunt bilan kirgan (authenticate: admin | company). */
+/** Faqat `role=admin` AdminJS akkaunti. */
 function canGrantWallet(adm) {
-  return !!adm && (adm.role === 'admin' || adm.role === 'company');
+  return !!adm && adm.role === 'admin';
 }
 
 /** formidable (multipart/urlencoded) qiyin formatlarni yumshoq o‘qiymiz */
@@ -30,7 +30,7 @@ export function attachAdminWalletGrantRoutes(adminRouter) {
     try {
       const adm = currentAdmin(req);
       if (!adm) return res.status(401).json({ ok: false, message: 'Admin panelda kiring.' });
-      if (!canGrantWallet(adm)) return res.status(403).json({ ok: false, message: 'Ruxsat yo‘q.' });
+      if (!canGrantWallet(adm)) return res.status(403).json({ ok: false, message: 'Faqat admin roli coin va score berishi mumkin.' });
 
       const users = await User.find({})
         .select('name email role coins score isActive')
@@ -59,7 +59,7 @@ export function attachAdminWalletGrantRoutes(adminRouter) {
     try {
       const adm = currentAdmin(req);
       if (!adm) return res.status(401).json({ ok: false, message: 'Admin panelda kiring.' });
-      if (!canGrantWallet(adm)) return res.status(403).json({ ok: false, message: 'Ruxsat yo‘q.' });
+      if (!canGrantWallet(adm)) return res.status(403).json({ ok: false, message: 'Faqat admin roli coin va score berishi mumkin.' });
 
       const targetUserId = pickField(req.fields, req.body, 'targetUserId');
       const addCoins = Math.min(MAX_PER_FIELD, Math.max(0, Math.floor(Number(pickField(req.fields, req.body, 'addCoins')) || 0)));

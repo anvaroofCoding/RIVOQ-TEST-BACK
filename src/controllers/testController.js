@@ -8,6 +8,7 @@ import { TestSession } from '../models/TestSession.js';
 import crypto from 'crypto';
 import { TopicInviteCode } from '../models/TopicInviteCode.js';
 import { User } from '../models/User.js';
+import { Notification } from '../models/Notification.js';
 import { grantFinishRewardsIfNeeded, tryGrant80MilestoneOnce } from '../services/testRewards.js';
 import { ensureUserFriendIdFresh } from '../services/friendIdService.js';
 
@@ -536,6 +537,105 @@ export const getSession = asyncHandler(async (req, res, next) => {
       current: session.status === 'in_progress' ? publicQuestion(session, session.currentIndex) : null,
       ...(companyMeta ? { company: companyMeta } : {}),
     },
+  });
+});
+
+/** Bir sessiya uchun kompaniyaga ketma-ket bildirishnomalar orasidagi minimal interval (ms) */
+const COMPANY_TAB_VIOLATION_NOTIFY_COOLDOWN_MS = 90_000;
+
+/**
+ * Faqat 6 raqamli kod bilan boshlangan (kompaniya) test: foydalanuvchi ekrandan chiqib,
+ * frontend `hiddenDurationMs >= 1000` bo‘lganda chaqiradi — testni ochgan kompaniya
+ * (`TopicInviteCode.company`) ga notification ketadi.
+ */
+export const notifyCompanyTestTabLeave = asyncHandler(async (req, res, next) => {
+  const { sessionId } = req.params;
+  const hiddenRaw = req.body?.hiddenDurationMs;
+  const hiddenDurationMs = Number(hiddenRaw);
+
+  if (!Number.isFinite(hiddenDurationMs) || hiddenDurationMs < 1000) {
+    return next(
+      new AppError('hiddenDurationMs majburiy va kamida 1000 (1 soniya) bo‘lishi kerak', StatusCodes.BAD_REQUEST)
+    );
+  }
+
+  const session = await TestSession.findOne({ _id: sessionId, user: req.user._id });
+  if (!session) return next(new AppError('Session not found', StatusCodes.NOT_FOUND));
+
+  await ensureNotExpired(session);
+  if (session.status !== 'in_progress') {
+    return next(new AppError('Session is not active', StatusCodes.BAD_REQUEST));
+  }
+
+  const code = String(session.accessCode || '');
+  if (!/^\d{6}$/.test(code)) {
+    return next(
+      new AppError(
+        'Bu bildirishnoma faqat kompaniya kirish kodi orqali boshlangan test uchun',
+        StatusCodes.BAD_REQUEST
+      )
+    );
+  }
+
+  const topic = await Topic.findById(session.topic).select('subject name').lean();
+  if (!topic) return next(new AppError('Topic not found', StatusCodes.NOT_FOUND));
+
+  const sub = await Subject.findById(topic.subject).select('companyOwner').lean();
+  if (!sub?.companyOwner) {
+    return next(new AppError('Bu bildirishnoma faqat kompaniya testi uchun', StatusCodes.BAD_REQUEST));
+  }
+
+  const invite = await TopicInviteCode.findOne({ topic: session.topic }).select('company').lean();
+  const companyId = invite?.company ? String(invite.company) : String(sub.companyOwner);
+
+  const companyUser = await User.findById(companyId).select('role').lean();
+  if (!companyUser || companyUser.role !== 'company') {
+    return next(new AppError('Kompaniya vakili topilmadi', StatusCodes.BAD_REQUEST));
+  }
+
+  const now = Date.now();
+  const lastAt = session.lastCompanyTabViolationNotifiedAt
+    ? new Date(session.lastCompanyTabViolationNotifiedAt).getTime()
+    : 0;
+  if (lastAt && now - lastAt < COMPANY_TAB_VIOLATION_NOTIFY_COOLDOWN_MS) {
+    return res.status(StatusCodes.OK).json({
+      success: true,
+      data: { notified: false, reason: 'cooldown' },
+    });
+  }
+
+  const participant = await User.findById(req.user._id).select('name firstName lastName email').lean();
+  if (!participant) return next(new AppError('User not found', StatusCodes.NOT_FOUND));
+
+  const fn = [participant.firstName, participant.lastName].filter(Boolean).join(' ').trim();
+  const displayName = fn || participant.name || 'Foydalanuvchi';
+
+  const title = 'Kompaniya testi: qoida buzilish';
+  const body = `${displayName} (${participant.email}) test paytida ekrandan uzoqroq chiqqan — qoidalarni buzishi mumkin. Mavzu: «${topic.name}».`;
+
+  await Notification.create({
+    user: companyId,
+    type: 'company_test_alert',
+    title,
+    body,
+    data: {
+      kind: 'test_tab_or_background_leave',
+      sessionId: String(session._id),
+      topicId: String(topic._id),
+      topicName: topic.name,
+      participantId: String(req.user._id),
+      participantEmail: participant.email,
+      participantName: displayName,
+      hiddenDurationMs: Math.floor(hiddenDurationMs),
+    },
+  });
+
+  session.lastCompanyTabViolationNotifiedAt = new Date();
+  await session.save();
+
+  return res.status(StatusCodes.CREATED).json({
+    success: true,
+    data: { notified: true },
   });
 });
 
