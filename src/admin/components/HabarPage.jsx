@@ -8,6 +8,15 @@ function adminBase() {
   return m ? m[1] : '/admin'
 }
 
+async function parseAdminJson(res) {
+  const text = await res.text()
+  try {
+    return { ok: true, json: JSON.parse(text), text }
+  } catch {
+    return { ok: false, text }
+  }
+}
+
 const spinCss = `
 @keyframes habar-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 `
@@ -104,35 +113,49 @@ export default function HabarPage() {
   const doSend = async () => {
     const ids = getSelectedArray()
     if (!ids.length) {
-      notice({ message: 'Kamida bitta foydalanuvchi tanlang', type: 'error' })
+      notice({ message: 'habar_selectUser', type: 'error' })
       return
     }
     if (!title.trim() || !body.trim()) {
-      notice({ message: 'Sarlavha va matn to‘ldiring', type: 'error' })
+      notice({ message: 'habar_fillFields', type: 'error' })
       return
     }
     if (!window.confirm(`${ids.length} ta foydalanuvchiga xabar yuborilsinmi?`)) return
 
     setSending(true)
     try {
+      const fd = new FormData()
+      for (const id of ids) fd.append('userIds', id)
+      fd.append('title', title.trim())
+      fd.append('body', body.trim())
+
       const res = await fetch(`${adminBase()}/custom/habar/send`, {
         method: 'POST',
         credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          userIds: ids,
-          title: title.trim(),
-          body: body.trim(),
-        }),
+        headers: { Accept: 'application/json' },
+        body: fd,
       })
-      const j = await res.json()
-      if (!j.ok) throw new Error(j.message || 'Xatolik')
-      notice({ message: j.message || 'Yuborildi', type: 'success' })
+      const parsed = await parseAdminJson(res)
+      const j = parsed.ok ? parsed.json : {}
+      if (!res.ok || !j.ok) {
+        const msg =
+          j.message ||
+          (parsed.ok ? 'Xatolik' : 'Server javobi JSON emas')
+        throw new Error(msg)
+      }
+      notice({ message: 'habar_sentOk', type: 'success' })
       setTitle('')
       setBody('')
       syncRef(new Set())
     } catch (err) {
-      notice({ message: err.message || 'Xatolik', type: 'error' })
+      const raw = String(err?.message || '')
+      if (raw.includes('Kamida bitta')) {
+        notice({ message: 'habar_selectUser', type: 'error' })
+      } else if (raw.includes('Sarlavha va matn')) {
+        notice({ message: 'habar_fillFields', type: 'error' })
+      } else {
+        notice({ message: 'habar_errorGeneric', type: 'error' })
+      }
     } finally {
       setSending(false)
     }

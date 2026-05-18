@@ -1,4 +1,3 @@
-import express from 'express';
 import fs from 'fs/promises';
 import path from 'path';
 import { config } from '../config/index.js';
@@ -1458,10 +1457,6 @@ export const setupAdmin = async (app) => {
       }
       next();
     });
-
-    // Faqat maxsus API — AdminJS `req._body` tekshiruvi bilan global json mos kelmaydi
-    adminRouter.use('/custom', express.json({ limit: '10mb' }));
-    adminRouter.use('/custom', express.urlencoded({ extended: true, limit: '10mb' }));
 
     attachAdminWalletGrantRoutes(adminRouter);
     attachCompanyTestRoutes(adminRouter);

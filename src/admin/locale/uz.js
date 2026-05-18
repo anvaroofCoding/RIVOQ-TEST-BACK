@@ -116,7 +116,10 @@ export const adminUzLocale = {
         foundBug_subtitle: 'GitHub’da muammo oching',
         needMoreSolutions_title: 'Qo‘shimcha yechim kerakmi?',
         needMoreSolutions_subtitle: 'AdminJS asosida maxsus dastur va dizayn xizmatlari',
-        'Kamida bitta foydalanuvchi tanlang': 'Kamida bitta foydalanuvchi tanlang',
+        habar_selectUser: 'Kamida bitta foydalanuvchi tanlang',
+        habar_fillFields: 'Sarlavha va matn to‘ldiring',
+        habar_sentOk: 'Xabar yuborildi',
+        habar_errorGeneric: 'Xabar yuborilmadi. Sahifani yangilab qayta urinib ko‘ring.',
         loginWelcome: 'Admin panelga kirish',
       },
       components: {
