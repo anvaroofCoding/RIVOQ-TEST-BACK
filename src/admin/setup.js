@@ -1463,7 +1463,17 @@ export const setupAdmin = async (app) => {
     attachMonitoringRoutes(adminRouter);
     attachHabarRoutes(adminRouter);
 
-    await ensureTopicInviteIndexes();
+    try {
+      await ensureTopicInviteIndexes();
+    } catch (e) {
+      if (e?.code === 14031 || e?.codeName === 'OutOfDiskSpace') {
+        console.error(
+          '[AdminJS] MongoDB disk to‘lgan — panel cheklangan ishlaydi. Atlas Storage → joy bo‘shating.'
+        );
+      } else {
+        throw e;
+      }
+    }
 
     app.use(admin.options.rootPath, adminRouter);
 

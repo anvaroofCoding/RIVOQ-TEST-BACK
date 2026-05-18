@@ -5,6 +5,10 @@ import { Subject } from '../models/Subject.js';
 import { TestSession } from '../models/TestSession.js';
 import { User } from '../models/User.js';
 
+function isMongoOutOfDisk(error) {
+  return error?.code === 14031 || error?.codeName === 'OutOfDiskSpace';
+}
+
 /** Eski `topic` unique indeksini olib tashlab, faqat ochiq test uchun partial unique qo‘yiladi */
 export async function ensureTopicInviteIndexes() {
   try {
@@ -14,15 +18,27 @@ export async function ensureTopicInviteIndexes() {
         await TopicInviteCode.collection.dropIndex(idx.name);
       }
     }
-  } catch {
+  } catch (e) {
+    if (isMongoOutOfDisk(e)) throw e;
     /* indeks yo‘q */
   }
   try {
     await TopicInviteCode.collection.dropIndex('topic_1');
-  } catch {
+  } catch (e) {
+    if (isMongoOutOfDisk(e)) throw e;
     /* */
   }
-  await TopicInviteCode.syncIndexes();
+  try {
+    await TopicInviteCode.syncIndexes();
+  } catch (e) {
+    if (isMongoOutOfDisk(e)) {
+      console.error(
+        '[MongoDB] Disk to‘lgan (OutOfDiskSpace) — indekslar yangilanmadi. Atlas’da joy bo‘shating yoki cluster’ni kattalashtiring.'
+      );
+      return;
+    }
+    throw e;
+  }
 }
 
 export async function generateUniqueInviteCode(excludeTopicId = null) {

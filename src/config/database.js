@@ -2,12 +2,17 @@ import mongoose from 'mongoose';
 import MongoStore from 'connect-mongo';
 import { config } from './index.js';
 
+/** Admin + API sessiyalari — 24 soatdan keyin MongoDB dan o‘chadi (disk tejash) */
+const SESSION_TTL_SECONDS = 24 * 60 * 60;
+
 /** Mongoose ulanishi tayyor bo‘lgandan keyin — sessiya uchun alohida `MongoClient` ochilmaydi */
 export function createMongoSessionStore() {
   const client = mongoose.connection.getClient();
   return MongoStore.create({
     client,
     dbName: mongoose.connection.name,
+    ttl: SESSION_TTL_SECONDS,
+    autoRemove: 'native',
   });
 }
 

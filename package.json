@@ -12,7 +12,9 @@
     "lint": "eslint src",
     "seed": "node src/scripts/seedAdmin.js",
     "test:otp": "node scripts/test-otp-flow.mjs",
-    "test:smtp": "node scripts/test-smtp.mjs"
+    "test:smtp": "node scripts/test-smtp.mjs",
+    "mongo:report": "node scripts/mongo-storage-report.mjs",
+    "mongo:cleanup": "node scripts/mongo-cleanup.mjs"
   },
   "keywords": [
     "express",
