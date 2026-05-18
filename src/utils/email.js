@@ -163,7 +163,11 @@ function formatMailerError(err) {
 export function getPublicOtpEmailErrorMessage(err) {
   const m = `${err?.message || ''} ${err?.code || ''} ${err?.responseCode || ''}`;
   if (/Resend:/i.test(m)) {
-    return m.replace(/^Resend:\s*/i, 'Email xizmati: ');
+    const plain = m.replace(/^Resend:\s*/i, '');
+    if (/domain is not verified|not verified/i.test(plain)) {
+      return 'Yuboruvchi manzil Gmail — Resend uchun EMAIL_FROM=RIVIQ <onboarding@resend.dev> qo‘ying (Render Environment).';
+    }
+    return `Email xizmati: ${plain}`;
   }
   if (/535|Invalid login|EAUTH|EENVELOPE|authentication failed/i.test(m)) {
     return 'Gmail: SMTP_USER va App password (16 belgi) noto‘g‘ri yoki hisob bloklangan.';
@@ -177,21 +181,52 @@ export function getPublicOtpEmailErrorMessage(err) {
   return 'Email yuborilmadi. Bir ozdan keyin qayta «Kodni yuborish»ni bosing.';
 }
 
-/** Resend: `email@x.com` yoki `Ism <email@x.com>` — .env dagi qo‘shtirnoqlarni olib tashlaydi */
+const RESEND_TEST_FROM = 'RIVIQ <onboarding@resend.dev>';
+
+const RESEND_BLOCKED_FROM_DOMAINS = new Set([
+  'gmail.com',
+  'googlemail.com',
+  'yahoo.com',
+  'hotmail.com',
+  'outlook.com',
+  'live.com',
+  'icloud.com',
+]);
+
+function extractEmailFromFromHeader(fromHeader) {
+  const s = String(fromHeader || '').trim();
+  const m = s.match(/<([^>]+)>/);
+  if (m) return m[1].trim().toLowerCase();
+  if (s.includes('@')) return s.toLowerCase();
+  return '';
+}
+
+/** Resend: Gmail/Yahoo `from` ishlamaydi — faqat tasdiqlangan domen yoki test manzil */
 function normalizeResendFrom(raw) {
-  let s = String(raw || '').trim();
+  const explicit = process.env.RESEND_FROM?.trim();
+  let s = String(explicit || raw || RESEND_TEST_FROM).trim();
   if (
     (s.startsWith('"') && s.endsWith('"')) ||
     (s.startsWith("'") && s.endsWith("'"))
   ) {
     s = s.slice(1, -1).trim();
   }
+
+  const addr = extractEmailFromFromHeader(s);
+  const domain = addr.includes('@') ? addr.split('@')[1] : '';
+  if (!explicit && (!addr || RESEND_BLOCKED_FROM_DOMAINS.has(domain))) {
+    return RESEND_TEST_FROM;
+  }
+  if (explicit && RESEND_BLOCKED_FROM_DOMAINS.has(domain)) {
+    return RESEND_TEST_FROM;
+  }
+
   const bare = /^[^\s<>"']+@[^\s<>"']+\.[^\s<>"']+$/i;
   const named = /^[^<>]+<[^\s<>"']+@[^\s<>"']+\.[^\s<>"']+>$/i;
   if (bare.test(s) || named.test(s)) {
     return s;
   }
-  return 'RIVIQ <onboarding@resend.dev>';
+  return RESEND_TEST_FROM;
 }
 
 async function sendOtpViaResend({ to, code, from, subject, text }) {
@@ -229,9 +264,7 @@ export async function sendOtpEmail({ to, code }) {
   const text = `Kirishingiz uchun kod: ${code}\n\nKod 10 daqiqa amal qiladi.`;
 
   if (isResendConfigured()) {
-    const from = normalizeResendFrom(
-      process.env.RESEND_FROM?.trim() || fromRaw
-    );
+    const from = normalizeResendFrom(process.env.RESEND_FROM?.trim() || fromRaw);
     // eslint-disable-next-line no-console
     console.log(`[OTP] Resend API orqali: to=${to} from=${from}`);
     return sendOtpViaResend({ to, code, from, subject, text });
