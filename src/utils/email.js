@@ -177,6 +177,23 @@ export function getPublicOtpEmailErrorMessage(err) {
   return 'Email yuborilmadi. Bir ozdan keyin qayta «Kodni yuborish»ni bosing.';
 }
 
+/** Resend: `email@x.com` yoki `Ism <email@x.com>` — .env dagi qo‘shtirnoqlarni olib tashlaydi */
+function normalizeResendFrom(raw) {
+  let s = String(raw || '').trim();
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  const bare = /^[^\s<>"']+@[^\s<>"']+\.[^\s<>"']+$/i;
+  const named = /^[^<>]+<[^\s<>"']+@[^\s<>"']+\.[^\s<>"']+>$/i;
+  if (bare.test(s) || named.test(s)) {
+    return s;
+  }
+  return 'RIVIQ <onboarding@resend.dev>';
+}
+
 async function sendOtpViaResend({ to, code, from, subject, text }) {
   const key = resendApiKey();
   const res = await fetch('https://api.resend.com/emails', {
@@ -211,15 +228,16 @@ export async function sendOtpEmail({ to, code }) {
   const subject = 'RIVIQ — kirish kodi';
   const text = `Kirishingiz uchun kod: ${code}\n\nKod 10 daqiqa amal qiladi.`;
 
-  let from = fromRaw;
   if (isResendConfigured()) {
-    if (/^smtp\.gmail\.com$/i.test(c.host || '') && c.user && !from.includes(c.user)) {
-      from = c.user;
-    }
+    const from = normalizeResendFrom(
+      process.env.RESEND_FROM?.trim() || fromRaw
+    );
     // eslint-disable-next-line no-console
-    console.log(`[OTP] Resend API orqali: to=${to}`);
+    console.log(`[OTP] Resend API orqali: to=${to} from=${from}`);
     return sendOtpViaResend({ to, code, from, subject, text });
   }
+
+  let from = normalizeResendFrom(fromRaw);
 
   if (!createMailer()) {
     const miss = otpMissingParts(c).join(', ') || '(nomalum)';
