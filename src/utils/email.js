@@ -53,10 +53,27 @@ function otpMissingParts(c) {
   return m;
 }
 
+/** Resend.com — HTTPS (443), Render free SMTP blokidan qochish */
+function resendApiKey() {
+  return process.env.RESEND_API_KEY?.trim() || '';
+}
+
+export function isResendConfigured() {
+  return resendApiKey().length > 0;
+}
+
 /** Diagnostika: qaysi o‘zgaruvchilar bo‘lmaganda OTP email ketmaydi */
 export function smtpMissingEnvKeysForOtp() {
+  if (isResendConfigured()) return [];
   const c = resolvedSmtpConfig();
   return otpMissingParts(c);
+}
+
+export function otpEmailProvider() {
+  if (isResendConfigured()) return 'resend';
+  if (createMailer()) return 'smtp';
+  if (otpConsoleFallbackAllowed()) return 'console';
+  return 'none';
 }
 
 function connectionTimeouts() {
@@ -127,9 +144,9 @@ function otpConsoleFallbackAllowed() {
   return String(process.env.ALLOW_OTP_WITHOUT_SMTP || '').toLowerCase() === 'true';
 }
 
-/** OTP email yuborilishi mumkinmi (SMTP yoki dev konsol fallback) */
+/** OTP email yuborilishi mumkinmi (Resend API, SMTP yoki dev konsol) */
 export function isOtpEmailConfiguredOrDevFallback() {
-  return !!createMailer() || otpConsoleFallbackAllowed();
+  return isResendConfigured() || !!createMailer() || otpConsoleFallbackAllowed();
 }
 
 function formatMailerError(err) {
@@ -145,13 +162,47 @@ function formatMailerError(err) {
 /** Mobil UI — texnik inglizcha matnni emas, qisqa o‘zbekcha */
 export function getPublicOtpEmailErrorMessage(err) {
   const m = `${err?.message || ''} ${err?.code || ''} ${err?.responseCode || ''}`;
+  if (/Resend:/i.test(m)) {
+    return m.replace(/^Resend:\s*/i, 'Email xizmati: ');
+  }
   if (/535|Invalid login|EAUTH|EENVELOPE|authentication failed/i.test(m)) {
     return 'Gmail: SMTP_USER va App password (16 belgi) noto‘g‘ri yoki hisob bloklangan.';
   }
   if (/ETIMEDOUT|ECONNRESET|ENOTFOUND|ENETUNREACH|ESOCKET|ETLS|ECONNREFUSED|certificate/i.test(m)) {
-    return 'Pochta serveriga ulanib bo‘lmadi. Internetni va Render’da SMTP (host, port 587) sozlamalarini tekshiring.';
+    if (config.node_env === 'production') {
+      return 'Render bepul rejimida SMTP (587) bloklangan. RESEND_API_KEY qo‘ying yoki Render’ni pullik rejimga o‘tkazing.';
+    }
+    return 'Pochta serveriga ulanib bo‘lmadi. SMTP host/port va internetni tekshiring.';
   }
   return 'Email yuborilmadi. Bir ozdan keyin qayta «Kodni yuborish»ni bosing.';
+}
+
+async function sendOtpViaResend({ to, code, from, subject, text }) {
+  const key = resendApiKey();
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${key}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from,
+      to: [to],
+      subject,
+      text,
+    }),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail =
+      typeof body?.message === 'string'
+        ? body.message
+        : typeof body?.error === 'string'
+          ? body.error
+          : `HTTP ${res.status}`;
+    throw new Error(`Resend: ${detail}`);
+  }
+  return { delivered: true, via: 'resend' };
 }
 
 export async function sendOtpEmail({ to, code }) {
@@ -159,6 +210,16 @@ export async function sendOtpEmail({ to, code }) {
   const fromRaw = process.env.EMAIL_FROM?.trim() || 'no-reply@rivoq.local';
   const subject = 'RIVIQ — kirish kodi';
   const text = `Kirishingiz uchun kod: ${code}\n\nKod 10 daqiqa amal qiladi.`;
+
+  let from = fromRaw;
+  if (isResendConfigured()) {
+    if (/^smtp\.gmail\.com$/i.test(c.host || '') && c.user && !from.includes(c.user)) {
+      from = c.user;
+    }
+    // eslint-disable-next-line no-console
+    console.log(`[OTP] Resend API orqali: to=${to}`);
+    return sendOtpViaResend({ to, code, from, subject, text });
+  }
 
   if (!createMailer()) {
     const miss = otpMissingParts(c).join(', ') || '(nomalum)';

@@ -193,7 +193,7 @@ export const requestEmailCode = asyncHandler(async (req, res) => {
 
   if (!isOtpEmailConfiguredOrDevFallback()) {
     throw new AppError(
-      'Email orqali kod yuborish uchun serverda SMTP sozlanmagan. Render → Environment: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, EMAIL_FROM.',
+      'Email OTP sozlanmagan. Render bepul: RESEND_API_KEY (tavsiya) yoki pullik rejim + SMTP_HOST, SMTP_USER, SMTP_PASS, EMAIL_FROM.',
       StatusCodes.SERVICE_UNAVAILABLE
     );
   }

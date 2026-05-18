@@ -27,7 +27,11 @@ import activityRoutes from './routes/activityRoutes.js';
 import companyRoutes from './routes/companyRoutes.js';
 
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
-import { createMailer, smtpMissingEnvKeysForOtp } from './utils/email.js';
+import {
+  createMailer,
+  otpEmailProvider,
+  smtpMissingEnvKeysForOtp,
+} from './utils/email.js';
 
 process.on('unhandledRejection', (reason) => {
   console.error('Unhandled rejection:', reason instanceof Error ? reason.stack : reason);
@@ -107,12 +111,14 @@ async function buildApp() {
 
   /** `/api/health` — BASE_URL `.../api` bo‘lsa ham tekshirish uchun (`/health` bilan bir xil). */
   const sendHealthJson = (_req, res) => {
-    const smtpConfigured = !!createMailer();
+    const provider = otpEmailProvider();
+    const smtpConfigured = provider !== 'none';
     const body = {
       status: 'ok',
       timestamp: new Date().toISOString(),
       environment: config.node_env,
       smtpOtpConfigured: smtpConfigured,
+      otpEmailProvider: provider,
     };
     if (!smtpConfigured) {
       body.smtpOtpMissingEnv = smtpMissingEnvKeysForOtp();
