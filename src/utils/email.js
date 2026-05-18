@@ -164,8 +164,14 @@ export function getPublicOtpEmailErrorMessage(err) {
   const m = `${err?.message || ''} ${err?.code || ''} ${err?.responseCode || ''}`;
   if (/Resend:/i.test(m)) {
     const plain = m.replace(/^Resend:\s*/i, '');
+    if (/only send testing emails to your own email/i.test(plain)) {
+      const own = plain.match(/\(([^)]+@[^)]+)\)/)?.[1];
+      return own
+        ? `Resend test rejimi: hozircha faqat ${own} ga kod yuboriladi. Boshqa email uchun resend.com/domains da domen tasdiqlang.`
+        : 'Resend test rejimi: hozircha faqat Resend akkauntingiz emailiga kod ketadi. Boshqa manzil uchun domen tasdiqlang.';
+    }
     if (/domain is not verified|not verified/i.test(plain)) {
-      return 'Yuboruvchi manzil Gmail — Resend uchun EMAIL_FROM=RIVIQ <onboarding@resend.dev> qo‘ying (Render Environment).';
+      return 'Yuboruvchi manzil noto‘g‘ri. Render’da EMAIL_FROM=RIVIQ <onboarding@resend.dev> qo‘ying.';
     }
     return `Email xizmati: ${plain}`;
   }
