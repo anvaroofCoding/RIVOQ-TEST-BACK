@@ -106,7 +106,63 @@ router.get('/subjects/:subjectId/topics', authenticate, testController.listTopic
  *       404:
  *         description: Kod topilmadi
  */
+/**
+ * @swagger
+ * /company-test/resume:
+ *   get:
+ *     tags: [Test]
+ *     summary: Kompaniya testini davom ettirish (kod kerak emas)
+ *     description: |
+ *       Ilova ochilganda chaqiring. Ochiq `in_progress` sessiya bo‘lsa va test yopilmagan bo‘lsa —
+ *       `canResume: true` + joriy savol.
+ *       Har javobda emas — faqat refresh / ilova ochilganda.
+ *       `clearResumePin: true` faqat `already_finished`, `blocked_by_company`, `test_closed`, `session_expired`.
+ *       `no_active_session` va `invite_not_found` — pin saqlanadi (vaqtinchalik).
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: sessionId
+ *         schema:
+ *           type: string
+ *         description: Pin saqlangan sessiya ID (refreshda aniqroq topish)
+ *     responses:
+ *       200:
+ *         description: Davom ettirish mumkin yoki sabab bilan rad (`clearResumePin`, `pinPolicy`)
+ */
+router.get('/company-test/resume', authenticate, testController.resumeCompanyTest);
+
 router.post('/topics/preview-by-code', authenticate, testController.previewTopicByAccessCode);
+
+/**
+ * @swagger
+ * /sessions/{sessionId}/test-plan:
+ *   get:
+ *     tags: [Test]
+ *     summary: Test rejasi (mavzular ketma-ketligi, joriy segment)
+ *     description: Ko‘p mavzuli kompaniya testi — qaysi mavzuda ekansiz va keyingi qadam.
+ *     security:
+ *       - bearerAuth: []
+ */
+router.get('/sessions/:sessionId/test-plan', authenticate, testController.getSessionTestPlan);
+
+/**
+ * @swagger
+ * /sessions/{sessionId}/segment-transition:
+ *   get:
+ *     tags: [Test]
+ *     summary: Keyingi mavzuga o‘tish ogohlantirishi
+ *     description: |
+ *       `atIndex` — tekshiriladigan savol indeksi (odatda joriy `currentIndex`).
+ *       `segmentTransition` bo‘lsa, ilova modal ko‘rsatadi.
+ *     security:
+ *       - bearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: atIndex
+ *         schema: { type: integer }
+ */
+router.get('/sessions/:sessionId/segment-transition', authenticate, testController.getSessionSegmentTransition);
 
 /**
  * @swagger

@@ -1,3 +1,4 @@
+import express from 'express';
 import fs from 'fs/promises';
 import path from 'path';
 import { config } from '../config/index.js';
@@ -12,69 +13,23 @@ import { Topic } from '../models/Topic.js';
 import { Question } from '../models/Question.js';
 import { Notification } from '../models/Notification.js';
 import { TopicInviteCode } from '../models/TopicInviteCode.js';
-import { TestSession } from '../models/TestSession.js';
+import { AdminMonitoringStub } from '../models/AdminMonitoringStub.js';
+import { AdminHabarStub } from '../models/AdminHabarStub.js';
 import { attachAdminWalletGrantRoutes } from './adminWalletGrant.js';
-
-/** Kompaniya monitoringi: mavzu bo‘yicha har user uchun oxirgi sessiya */
-async function buildParticipantRowsForTopic(topicId) {
-  const tid = topicId ? String(topicId) : '';
-  if (!tid) return [];
-
-  const topic = await Topic.findById(tid).select('subject').lean();
-  if (!topic?.subject) return [];
-
-  const sub = await Subject.findById(topic.subject).select('companyOwner').lean();
-  if (!sub?.companyOwner) return [];
-
-  const sessions = await TestSession.find({ topic: tid })
-    .populate('user', 'name email')
-    .sort({ updatedAt: -1 })
-    .lean();
-
-  const byUser = new Map();
-  for (const s of sessions) {
-    const uid = String(s.user?._id || s.user || '');
-    if (!uid) continue;
-    const prev = byUser.get(uid);
-    if (!prev || new Date(s.updatedAt) > new Date(prev.updatedAt)) {
-      byUser.set(uid, s);
-    }
-  }
-
-  const rows = [...byUser.values()].map((s) => {
-    const u = s.user;
-    const total = Math.max(0, Number(s.total) || (Array.isArray(s.questions) ? s.questions.length : 0));
-    const answered = Array.isArray(s.questions) ? s.questions.filter((q) => q.selectedAnswer).length : 0;
-    const progressPercent = total > 0 ? Math.round((answered / total) * 1000) / 10 : 0;
-    const correctPercent =
-      s.status === 'finished' && total > 0 ? Math.round((s.score / total) * 1000) / 10 : null;
-
-    return {
-      userId: u?._id,
-      name: u?.name || '—',
-      email: u?.email || '—',
-      sessionId: s._id,
-      status: s.status,
-      progressPercent,
-      score: s.score ?? 0,
-      total,
-      correctPercent,
-      startedAt: s.startedAt,
-      finishedAt: s.finishedAt || null,
-    };
-  });
-
-  rows.sort((a, b) => {
-    const ap = a.status === 'in_progress' ? 0 : 1;
-    const bp = b.status === 'in_progress' ? 0 : 1;
-    if (ap !== bp) return ap - bp;
-    const ta = new Date(a.finishedAt || a.startedAt).getTime();
-    const tb = new Date(b.finishedAt || b.startedAt).getTime();
-    return tb - ta;
-  });
-
-  return rows;
-}
+import { attachCompanyTestRoutes } from './adminCompanyTest.js';
+import { attachMonitoringRoutes } from './adminMonitoring.js';
+import { attachHabarRoutes } from './adminHabar.js';
+import {
+  ensureTopicInviteIndexes,
+  buildParticipantRowsForInvite,
+  createInviteForTopic,
+  findActiveInviteForTopic,
+  generateUniqueInviteCode,
+  closeInviteById,
+  inviteStatusLabel,
+} from '../services/companyInviteService.js';
+import { blockUserForCompany, unblockUserForCompany } from '../services/companyBlockService.js';
+import { adminUzLocale } from './locale/uz.js';
 
 AdminJS.registerAdapter({
   Database: AdminJSMongoose.Database,
@@ -129,7 +84,18 @@ export const setupAdmin = async (app) => {
       'WalletGrantAdmin',
       fromRoot('src', 'admin', 'components', 'WalletGrantAdmin.jsx')
     );
-
+    const testMonitoringPageComponent = componentLoader.add(
+      'TestMonitoringPage',
+      fromRoot('src', 'admin', 'components', 'TestMonitoringPage.jsx')
+    );
+    const habarPageComponent = componentLoader.add(
+      'HabarPage',
+      fromRoot('src', 'admin', 'components', 'HabarPage.jsx')
+    );
+    const myProfileRedirectComponent = componentLoader.add(
+      'MyProfileRedirect',
+      fromRoot('src', 'admin', 'components', 'MyProfileRedirect.jsx')
+    );
     const companyLogoUploadDir = path.join(process.cwd(), 'public', 'uploads', 'company-logos');
 
     const onlyAdmin = ({ currentAdmin }) => currentAdmin?.role === 'admin';
@@ -156,6 +122,18 @@ export const setupAdmin = async (app) => {
 
     const adminOrCompany = ({ currentAdmin }) =>
       currentAdmin?.role === 'admin' || currentAdmin?.role === 'company';
+
+    /** Ro‘yxatda yangi qo‘shilganlar birinchi (default tartib) */
+    const mergeNewestFirstSort = (request, sortBy = 'createdAt') => {
+      if (!request) return request;
+      const q = flat.unflatten(request.query || {});
+      if (!q.sortBy) {
+        q.sortBy = sortBy;
+        q.direction = 'desc';
+      }
+      request.query = flat.flatten(q);
+      return request;
+    };
 
     const mergeCompanySubjectList = (request, currentAdmin) => {
       if (!request || currentAdmin?.role !== 'company') return request;
@@ -267,28 +245,15 @@ export const setupAdmin = async (app) => {
         throw new Error('Bu mavzu sizning kompaniyangizga tegishli emas');
       }
 
-      const existed = await TopicInviteCode.findOne({ topic: topicId }).lean();
-      if (existed) {
+      const active = await findActiveInviteForTopic(topicId);
+      if (active) {
         throw new Error(
-          'Bu mavzu uchun kod allaqachon mavjud. Kodni yangilash: «Test yaratish» → Mavzu → «Testni boshlash — 6 raqamli kod».'
+          'Bu mavzu uchun test hali ochiq. Avval «Testni tugatish», keyin yangi kod yarating.'
         );
       }
 
-      const crypto = await import('crypto');
-      let code = null;
-      for (let attempt = 0; attempt < 50; attempt++) {
-        const n = crypto.randomInt(0, 1_000_000);
-        const candidate = String(n).padStart(6, '0');
-        const row = await TopicInviteCode.findOne({ code: candidate }).lean();
-        if (!row) {
-          code = candidate;
-          break;
-        }
-      }
-      if (!code) throw new Error('Kod yaratilmadi — qayta urinib ko‘ring');
-
-      const companyId =
-        admin.role === 'company' ? admin.id : String(topic.companyOwner);
+      const companyId = admin.role === 'company' ? admin.id : String(topic.companyOwner);
+      const code = await generateUniqueInviteCode();
 
       request.payload = {
         topic: topicId,
@@ -326,12 +291,13 @@ export const setupAdmin = async (app) => {
         throw new Error('Faqat maxfiy (kompaniya) mavzusi uchun.');
       }
 
-      const other = await TopicInviteCode.findOne({
+      const otherActive = await TopicInviteCode.findOne({
         topic: newTopicId,
+        closedAt: null,
         _id: { $ne: recordId },
       }).lean();
-      if (other) {
-        throw new Error('Bu mavzu uchun allaqachon boshqa kod yozuvi mavjud.');
+      if (otherActive) {
+        throw new Error('Bu mavzu uchun boshqa ochiq kod mavjud — avval uni tugating.');
       }
 
       const crypto = await import('crypto');
@@ -381,11 +347,16 @@ export const setupAdmin = async (app) => {
       const isSelf = recordId && recordId === myId;
 
       if (isSelf) {
+        if (p.role && p.role !== 'company') {
+          throw new Error('Siz o‘z rolingizni o‘zgartira olmaysiz!');
+        }
         const allow = ['name', 'email', 'password', 'phone', 'companyLogo'];
         const next = {};
         allow.forEach((k) => {
           if (p[k] !== undefined) next[k] = p[k];
         });
+        // Majburiy ravishda rolni company qilib saqlaymiz (agar adminjs bo'shatib yubormasligi uchun)
+        next.role = 'company';
         request.payload = next;
         return request;
       }
@@ -475,7 +446,7 @@ export const setupAdmin = async (app) => {
         const name = `${Date.now()}-${Math.random().toString(36).slice(2)}${ext}`;
         const dest = path.join(companyLogoUploadDir, name);
         await fs.copyFile(file.path, dest);
-        await fs.unlink(file.path).catch(() => {});
+        await fs.unlink(file.path).catch(() => { });
 
         const url = `/uploads/company-logos/${name}`;
         return res.json({ url });
@@ -488,30 +459,14 @@ export const setupAdmin = async (app) => {
     const admin = new AdminJS({
       rootPath: '/admin',
       componentLoader,
-      /** Ingliz fallback matnlari boshqacha bo‘lsa, startCase orqali "Grant Wallet Credits" chiqmasin */
-      locale: {
-        language: 'en',
-        translations: {
-          en: {
-            labels: {
-              dashboard: 'Bo‘lim',
-            },
-            resources: {
-              User: {
-                actions: {
-                  grantWalletCredits: 'Coin va score berish',
-                },
-              },
-            },
-          },
-        },
-      },
+      locale: adminUzLocale,
       resources: [
         {
           resource: Subject,
           options: {
-            navigation: { name: 'Test yaratish' },
-            name: 'Fan',
+            navigation: { name: null, icon: 'Book' },
+            name: 'Fanlar',
+            sort: { sortBy: 'createdAt', direction: 'desc' },
             titleProperty: 'name',
             listProperties: ['_id', 'name', 'companyOwner', 'description', 'createdAt'],
             editProperties: ['name', 'description'],
@@ -520,11 +475,13 @@ export const setupAdmin = async (app) => {
             actions: {
               list: {
                 isAccessible: adminOrCompany,
-                before: async (request, context) => mergeCompanySubjectList(request, context.currentAdmin),
+                before: async (request, context) =>
+                  mergeCompanySubjectList(mergeNewestFirstSort(request), context.currentAdmin),
               },
               search: {
                 isAccessible: adminOrCompany,
-                before: async (request, context) => mergeCompanySubjectList(request, context.currentAdmin),
+                before: async (request, context) =>
+                  mergeCompanySubjectList(mergeNewestFirstSort(request), context.currentAdmin),
               },
               show: { isAccessible: ({ currentAdmin, record }) => canAccessCompanySubject({ currentAdmin, record }) },
               new: {
@@ -545,8 +502,9 @@ export const setupAdmin = async (app) => {
         {
           resource: Topic,
           options: {
-            navigation: { name: 'Test yaratish' },
-            name: 'Mavzu yaratish',
+            navigation: { name: null, icon: 'Document' },
+            name: 'Mavzular',
+            sort: { sortBy: 'createdAt', direction: 'desc' },
             titleProperty: 'name',
             listProperties: ['_id', 'subject', 'name', 'companyOwner', 'difficulty', 'minutes', 'questionCount', 'createdAt'],
             editProperties: ['subject', 'name', 'description', 'minutes', 'difficulty'],
@@ -576,11 +534,13 @@ export const setupAdmin = async (app) => {
             actions: {
               list: {
                 isAccessible: adminOrCompany,
-                before: async (request, context) => mergeCompanyTopicList(request, context.currentAdmin),
+                before: async (request, context) =>
+                  mergeCompanyTopicList(mergeNewestFirstSort(request), context.currentAdmin),
               },
               search: {
                 isAccessible: adminOrCompany,
-                before: async (request, context) => mergeCompanyTopicList(request, context.currentAdmin),
+                before: async (request, context) =>
+                  mergeCompanyTopicList(mergeNewestFirstSort(request), context.currentAdmin),
               },
               show: { isAccessible: ({ currentAdmin, record }) => canAccessCompanyTopic({ currentAdmin, record }) },
               new: {
@@ -804,10 +764,13 @@ export const setupAdmin = async (app) => {
                   const wantsRegenerate = Boolean(request.payload?.regenerate);
 
                   if (!isPost || !wantsRegenerate) {
-                    const existing = await TopicInviteCode.findOne({ topic: topicId }).lean();
+                    const existing = await findActiveInviteForTopic(topicId);
                     return {
                       record: record.toJSON(currentAdmin),
-                      meta: { code: existing?.code || '' },
+                      meta: {
+                        code: existing?.code || '',
+                        status: inviteStatusLabel(existing),
+                      },
                     };
                   }
 
@@ -826,40 +789,29 @@ export const setupAdmin = async (app) => {
                     return { notice: { message: 'Ruxsat yo‘q', type: 'error' }, record: record.toJSON(currentAdmin) };
                   }
 
-                  const companyId = topic.companyOwner;
-                  const crypto = await import('crypto');
+                  const companyId =
+                    currentAdmin?.role === 'company' ? currentAdmin.id : String(topic.companyOwner);
 
-                  let code = null;
-                  for (let attempt = 0; attempt < 50; attempt++) {
-                    const n = crypto.randomInt(0, 1_000_000);
-                    const candidate = String(n).padStart(6, '0');
-                    const row = await TopicInviteCode.findOne({ code: candidate }).lean();
-                    if (!row || String(row.topic) === String(topicId)) {
-                      code = candidate;
-                      break;
-                    }
+                  let invite;
+                  const active = await findActiveInviteForTopic(topicId);
+                  if (active) {
+                    const code = await generateUniqueInviteCode(topicId);
+                    invite = await TopicInviteCode.findByIdAndUpdate(
+                      active._id,
+                      { $set: { code } },
+                      { new: true }
+                    ).lean();
+                  } else {
+                    invite = await createInviteForTopic(topicId, companyId);
                   }
-                  if (!code) {
-                    return {
-                      notice: { message: 'Kod yaratilmadi — qayta urinib ko‘ring', type: 'error' },
-                      record: record.toJSON(currentAdmin),
-                      meta: { code: '' },
-                    };
-                  }
-
-                  await TopicInviteCode.findOneAndUpdate(
-                    { topic: topicId },
-                    { $set: { code, company: companyId, topic: topicId, closedAt: null } },
-                    { upsert: true, new: true }
-                  );
 
                   return {
                     notice: {
-                      message: `Kirish kodi: ${code} — oddiy foydalanuvchiga yuboring (mobil ilova: 6 raqamli kod bilan testni boshlash).`,
+                      message: `Kirish kodi: ${invite.code} — foydalanuvchiga yuboring (mobil: 6 raqam).`,
                       type: 'success',
                     },
                     record: record.toJSON(currentAdmin),
-                    meta: { code },
+                    meta: { code: invite.code, status: inviteStatusLabel(invite) },
                   };
                 },
               },
@@ -895,30 +847,24 @@ export const setupAdmin = async (app) => {
                     return { notice: { message: 'Ruxsat yo‘q', type: 'error' }, record: record.toJSON(currentAdmin) };
                   }
 
-                  const existingInv = await TopicInviteCode.findOne({ topic: topicId }).lean();
+                  const existingInv = await findActiveInviteForTopic(topicId);
                   if (!existingInv) {
                     return {
                       notice: {
                         message:
-                          'Bu mavzu uchun kirish yozuvi topilmadi — avval «6 raqamli kod» yarating.',
+                          'Ochiq kod topilmadi — avval «6 raqamli kod» yarating yoki allaqachon tugatilgan.',
                         type: 'info',
                       },
                       record: record.toJSON(currentAdmin),
                     };
                   }
-                  if (existingInv.closedAt) {
-                    return {
-                      notice: { message: 'Bu test allaqachon «tugatilgan» holatida.', type: 'info' },
-                      record: record.toJSON(currentAdmin),
-                    };
-                  }
 
-                  await TopicInviteCode.updateOne({ topic: topicId }, { $set: { closedAt: new Date() } });
+                  await closeInviteById(existingInv._id);
 
                   return {
                     notice: {
                       message:
-                        'Test tugatildi — mobil kirish yopildi, yozuv o‘chirilmadi (historiya + ishtirokchilar ro‘yxati saqlanadi). Yangi raund: «6 raqamli kod» bilan kod yangilang.',
+                        'Test tugatildi (arxiv) — ishtirokchilar saqlanadi. Yangi raund: «6 raqamli kod» yoki «Test kirish kodlari» → «Yangi raund».',
                       type: 'success',
                     },
                     record: record.toJSON(currentAdmin),
@@ -931,15 +877,21 @@ export const setupAdmin = async (app) => {
         {
           resource: TopicInviteCode,
           options: {
-            navigation: { name: 'Kompaniya' },
-            name: 'Test kirish kodlari',
+            navigation: { name: null, icon: 'Key' },
+            name: 'Test kodlari',
+            sort: { sortBy: 'createdAt', direction: 'desc' },
             titleProperty: 'code',
-            listProperties: ['code', 'topic', 'company', 'closedAt', 'createdAt'],
+            listProperties: ['code', 'topic', 'testStatus', 'closedAt', 'createdAt'],
             newProperties: ['topic'],
             editProperties: ['topic'],
-            showProperties: ['code', 'topic', 'company', 'closedAt', 'createdAt', 'updatedAt'],
+            showProperties: ['code', 'topic', 'company', 'testStatus', 'closedAt', 'createdAt', 'updatedAt'],
             filterProperties: ['code', 'closedAt'],
             properties: {
+              testStatus: {
+                type: 'string',
+                isVisible: { list: true, filter: false, show: true, edit: false, new: false },
+                props: { disabled: true },
+              },
               topic: {
                 reference: 'Topic',
                 isRequired: true,
@@ -947,7 +899,7 @@ export const setupAdmin = async (app) => {
                   'Shunchaki mavzuni tanlang. 6 raqamli kod avtomatik chiqadi; kompaniya ham mavzu orqali o‘zi bog‘lanadi — alohida tanlash yo‘q.',
               },
               closedAt: {
-                description: 'Yopilgan vaqt. Bo‘sh = test ochiq, mobil kod ishlaydi.',
+                description: 'Yopilgan vaqt (arxiv). Bo‘sh = «Davom etmoqda», mobil kod ishlaydi.',
               },
               company: {
                 reference: 'User',
@@ -975,21 +927,41 @@ export const setupAdmin = async (app) => {
             },
             actions: {
               list: {
-                isAccessible: onlyCompany,
-                before: async (request, context) => mergeCompanyInviteList(request, context.currentAdmin),
+                isAccessible: adminOrCompany,
+                before: async (request, context) => {
+                  let r = mergeNewestFirstSort(request);
+                  if (context.currentAdmin?.role === 'company') {
+                    r = mergeCompanyInviteList(r, context.currentAdmin);
+                  }
+                  return r;
+                },
               },
               search: {
-                isAccessible: onlyCompany,
-                before: async (request, context) => mergeCompanyInviteList(request, context.currentAdmin),
+                isAccessible: adminOrCompany,
+                before: async (request, context) => {
+                  let r = mergeNewestFirstSort(request);
+                  if (context.currentAdmin?.role === 'company') {
+                    r = mergeCompanyInviteList(r, context.currentAdmin);
+                  }
+                  return r;
+                },
               },
-              show: { isAccessible: canCompanyOwnInviteRecord },
+              show: {
+                isAccessible: ({ currentAdmin, record }) => {
+                  if (currentAdmin?.role === 'admin') return true;
+                  return canCompanyOwnInviteRecord({ currentAdmin, record });
+                },
+              },
               participantsOverview: {
                 actionType: 'record',
                 icon: 'Users',
-                label: 'Ishtirokchilar va natijalar',
+                label: 'Monitoring (ishtirokchilar)',
                 showInDrawer: false,
                 component: topicInviteMonitorComponent,
-                isAccessible: canCompanyOwnInviteRecord,
+                isAccessible: ({ currentAdmin, record }) => {
+                  if (currentAdmin?.role === 'admin') return true;
+                  return canCompanyOwnInviteRecord({ currentAdmin, record });
+                },
                 handler: async (request, response, context) => {
                   const { record, currentAdmin } = context;
                   const inviteId = record?.params?._id;
@@ -997,18 +969,153 @@ export const setupAdmin = async (app) => {
                     return { notice: { message: 'Yozuv topilmadi', type: 'error' } };
                   }
                   const inv = await TopicInviteCode.findById(inviteId).lean();
-                  if (!inv || String(inv.company) !== String(currentAdmin.id)) {
+                  if (!inv) {
+                    return { notice: { message: 'Yozuv topilmadi', type: 'error' } };
+                  }
+                  if (
+                    currentAdmin?.role === 'company' &&
+                    String(inv.company) !== String(currentAdmin.id)
+                  ) {
                     return { notice: { message: 'Ruxsat yoq', type: 'error' } };
                   }
-                  const rows = await buildParticipantRowsForTopic(inv.topic);
+                  const rows = await buildParticipantRowsForInvite(inv);
                   return {
                     record: record.toJSON(currentAdmin),
                     meta: {
                       rows,
                       closedAt: inv.closedAt || null,
                       code: inv.code,
+                      testStatus: inviteStatusLabel(inv),
+                      inviteId: String(inv._id),
+                      topicId: String(inv.topic),
+                      companyId: String(inv.company?._id || inv.company || ''),
                     },
                   };
+                },
+              },
+              blockParticipant: {
+                actionType: 'record',
+                isVisible: false,
+                isAccessible: adminOrCompany,
+                handler: async (request, response, context) => {
+                  const isPost = String(request.method || '').toLowerCase() === 'post';
+                  if (!isPost) {
+                    return { record: context.record?.toJSON?.(context.currentAdmin) };
+                  }
+                  const { record, currentAdmin } = context;
+                  const userId = String(request.payload?.userId || '').trim();
+                  if (!userId) {
+                    return {
+                      notice: { message: 'userId kerak', type: 'error' },
+                      record: record.toJSON(currentAdmin),
+                    };
+                  }
+                  let companyId =
+                    normalizeRefId(record.params?.company) ||
+                    (currentAdmin?.role === 'company' ? String(currentAdmin.id) : '');
+                  if (!companyId && record?.params?._id) {
+                    const invRow = await TopicInviteCode.findById(record.params._id).select('company').lean();
+                    companyId = normalizeRefId(invRow?.company);
+                  }
+                  if (!companyId) {
+                    return {
+                      notice: { message: 'Kompaniya aniqlanmadi', type: 'error' },
+                      record: record.toJSON(currentAdmin),
+                    };
+                  }
+                  try {
+                    await blockUserForCompany(userId, companyId, request.payload?.reason);
+                    return {
+                      notice: { message: 'Foydalanuvchi bloklandi', type: 'success' },
+                      record: record.toJSON(currentAdmin),
+                    };
+                  } catch (e) {
+                    return {
+                      notice: { message: e?.message || 'Xatolik', type: 'error' },
+                      record: record.toJSON(currentAdmin),
+                    };
+                  }
+                },
+              },
+              unblockParticipant: {
+                actionType: 'record',
+                isVisible: false,
+                isAccessible: adminOrCompany,
+                handler: async (request, response, context) => {
+                  const isPost = String(request.method || '').toLowerCase() === 'post';
+                  if (!isPost) {
+                    return { record: context.record?.toJSON?.(context.currentAdmin) };
+                  }
+                  const { record, currentAdmin } = context;
+                  const userId = String(request.payload?.userId || '').trim();
+                  if (!userId) {
+                    return {
+                      notice: { message: 'userId kerak', type: 'error' },
+                      record: record.toJSON(currentAdmin),
+                    };
+                  }
+                  let companyId =
+                    normalizeRefId(record.params?.company) ||
+                    (currentAdmin?.role === 'company' ? String(currentAdmin.id) : '');
+                  if (!companyId && record?.params?._id) {
+                    const invRow = await TopicInviteCode.findById(record.params._id).select('company').lean();
+                    companyId = normalizeRefId(invRow?.company);
+                  }
+                  if (!companyId) {
+                    return {
+                      notice: { message: 'Kompaniya aniqlanmadi', type: 'error' },
+                      record: record.toJSON(currentAdmin),
+                    };
+                  }
+                  try {
+                    await unblockUserForCompany(userId, companyId);
+                    return {
+                      notice: { message: 'Blok olib tashlandi', type: 'success' },
+                      record: record.toJSON(currentAdmin),
+                    };
+                  } catch (e) {
+                    return {
+                      notice: { message: e?.message || 'Xatolik', type: 'error' },
+                      record: record.toJSON(currentAdmin),
+                    };
+                  }
+                },
+              },
+              createNewRound: {
+                actionType: 'record',
+                icon: 'Refresh',
+                label: 'Yangi raund (yangi kod)',
+                showInDrawer: false,
+                isAccessible: ({ currentAdmin, record }) => {
+                  if (!record?.params?.closedAt) return false;
+                  if (currentAdmin?.role === 'admin') return true;
+                  return canCompanyOwnInviteRecord({ currentAdmin, record });
+                },
+                handler: async (request, response, context) => {
+                  const { record, currentAdmin } = context;
+                  const topicId = normalizeRefId(record.params?.topic);
+                  const companyId =
+                    normalizeRefId(record.params?.company) ||
+                    (currentAdmin?.role === 'company' ? String(currentAdmin.id) : '');
+                  if (!topicId) {
+                    return { notice: { message: 'Mavzu topilmadi', type: 'error' } };
+                  }
+                  try {
+                    const created = await createInviteForTopic(topicId, companyId);
+                    const root = context._admin.options.rootPath || '/admin';
+                    return {
+                      notice: {
+                        message: `Yangi kod: ${created.code} — mobil ilovada shu kod bilan kiriladi.`,
+                        type: 'success',
+                      },
+                      redirectUrl: `${root}/resources/TopicInviteCode/records/${created._id}/show`,
+                    };
+                  } catch (e) {
+                    return {
+                      notice: { message: e?.message || 'Xatolik', type: 'error' },
+                      record: record.toJSON(currentAdmin),
+                    };
+                  }
                 },
               },
               closeThisInvite: {
@@ -1044,11 +1151,11 @@ export const setupAdmin = async (app) => {
                       record: context.record?.toJSON?.(currentAdmin),
                     };
                   }
-                  await TopicInviteCode.updateOne({ _id: id }, { $set: { closedAt: new Date() } });
+                  await closeInviteById(id);
                   return {
                     notice: {
                       message:
-                        'Test yopildi — yozuv saqlanadi, mobil kod endi ishlamaydi. Ishtirokchilar: «Ishtirokchilar va natijalar».',
+                        'Test tugatildi (arxiv) — ma’lumotlar saqlanadi. Yangi kod: «Yangi raund» yoki mavzudan «6 raqamli kod».',
                       type: 'success',
                     },
                     record: context.record?.toJSON?.(currentAdmin),
@@ -1056,7 +1163,7 @@ export const setupAdmin = async (app) => {
                 },
               },
               new: {
-                isAccessible: onlyCompany,
+                isAccessible: adminOrCompany,
                 before: topicInviteCodeNewBefore,
               },
               edit: {
@@ -1071,8 +1178,9 @@ export const setupAdmin = async (app) => {
         {
           resource: User,
           options: {
-            navigation: { name: 'Kompaniya' },
+            navigation: { name: null, icon: 'User' },
             name: 'Foydalanuvchilar',
+            sort: { sortBy: 'createdAt', direction: 'desc' },
             titleProperty: 'name',
             listProperties: ['_id', 'name', 'email', 'role', 'companyId', 'companyLogo', 'isActive', 'createdAt'],
             filterProperties: ['email', 'role', 'isActive', 'companyId'],
@@ -1115,6 +1223,12 @@ export const setupAdmin = async (app) => {
                 },
               },
               role: {
+                isVisible: {
+                  list: true,
+                  show: true,
+                  filter: true,
+                  edit: (context) => context?.currentAdmin?.role === 'admin',
+                },
                 availableValues: [
                   { value: 'user', label: 'User' },
                   { value: 'admin', label: 'Admin' },
@@ -1124,10 +1238,12 @@ export const setupAdmin = async (app) => {
             },
             actions: {
               list: {
-                before: async (request, context) => mergeCompanyListFilter(request, context.currentAdmin),
+                before: async (request, context) =>
+                  mergeCompanyListFilter(mergeNewestFirstSort(request), context.currentAdmin),
               },
               search: {
-                before: async (request, context) => mergeCompanyListFilter(request, context.currentAdmin),
+                before: async (request, context) =>
+                  mergeCompanyListFilter(mergeNewestFirstSort(request), context.currentAdmin),
               },
               new: {
                 before: async (request, context) => {
@@ -1157,17 +1273,13 @@ export const setupAdmin = async (app) => {
                 showInDrawer: false,
                 handler: async () => ({ meta: {} }),
               },
-              myCompanyProfile: {
+              myProfile: {
                 actionType: 'resource',
                 icon: 'Settings',
-                label: 'Kompaniya profili (logo, email, parol)',
-                isAccessible: ({ currentAdmin }) => currentAdmin?.role === 'company',
-                handler: async (request, response, context) => {
-                  const root = context._admin.options.rootPath || '/admin';
-                  return {
-                    redirectUrl: `${root}/resources/User/records/${context.currentAdmin.id}/edit`,
-                  };
-                },
+                label: 'Mening profilim (sozlamalar)',
+                component: myProfileRedirectComponent,
+                isAccessible: ({ currentAdmin }) => currentAdmin?.role === 'admin' || currentAdmin?.role === 'company',
+                handler: async () => ({ meta: {} }),
               },
               sendNotification: {
                 actionType: 'record',
@@ -1226,10 +1338,62 @@ export const setupAdmin = async (app) => {
             },
           },
         },
+        {
+          resource: AdminMonitoringStub,
+          options: {
+            id: 'Monitoring',
+            name: 'Monitoring',
+            navigation: { name: null, icon: 'Activity' },
+            listProperties: [],
+            filterProperties: [],
+            properties: {},
+            actions: {
+              list: {
+                component: testMonitoringPageComponent,
+                isAccessible: ({ currentAdmin }) =>
+                  currentAdmin?.role === 'admin' || currentAdmin?.role === 'company',
+                handler: async () => ({ records: [], meta: { total: 0, perPage: 10, page: 1 } }),
+              },
+              show: { isAccessible: () => false },
+              new: { isAccessible: () => false },
+              edit: { isAccessible: () => false },
+              delete: { isAccessible: () => false },
+              bulkDelete: { isAccessible: () => false },
+              search: { isAccessible: () => false },
+            },
+          },
+        },
+        {
+          resource: AdminHabarStub,
+          options: {
+            id: 'Habar',
+            name: 'Habar',
+            navigation: { name: null, icon: 'Bell' },
+            listProperties: [],
+            filterProperties: [],
+            properties: {},
+            actions: {
+              list: {
+                component: habarPageComponent,
+                isAccessible: ({ currentAdmin }) =>
+                  currentAdmin?.role === 'admin' || currentAdmin?.role === 'company',
+                handler: async () => ({ records: [], meta: { total: 0, perPage: 10, page: 1 } }),
+              },
+              show: { isAccessible: () => false },
+              new: { isAccessible: () => false },
+              edit: { isAccessible: () => false },
+              delete: { isAccessible: () => false },
+              bulkDelete: { isAccessible: () => false },
+              search: { isAccessible: () => false },
+            },
+          },
+        },
       ],
       branding: {
-        companyName: 'RIVOQ',
+        companyName: 'RIVOQ-TEST',
+        logo: false,
         withMadeWithLove: false,
+        favicon: process.env.ADMIN_BRAND_FAVICON || undefined,
       },
     });
 
@@ -1238,7 +1402,7 @@ export const setupAdmin = async (app) => {
     if (process.env.NODE_ENV !== 'production') {
       void fs
         .unlink(path.join(process.cwd(), '.adminjs', 'bundle.js'))
-        .catch(() => {});
+        .catch(() => { });
       void admin.watch().catch((e) => console.error('AdminJS watch:', e?.message || e));
     } else {
       try {
@@ -1268,7 +1432,6 @@ export const setupAdmin = async (app) => {
             title: user.name,
             id: String(user._id),
             role: user.role,
-            avatarUrl: user.companyLogo || user.avatar || undefined,
           };
         },
         cookiePassword: process.env.ADMIN_COOKIE_PASSWORD || 'change_this_cookie_secret_in_production',
@@ -1289,7 +1452,23 @@ export const setupAdmin = async (app) => {
 
     adminRouter.post('/upload/company-logo', handleCompanyLogoUpload);
 
+    adminRouter.use((req, _res, next) => {
+      if (req.session && !req.session.adminUser && req.session.admin) {
+        req.session.adminUser = req.session.admin;
+      }
+      next();
+    });
+
+    // Faqat maxsus API — AdminJS `req._body` tekshiruvi bilan global json mos kelmaydi
+    adminRouter.use('/custom', express.json({ limit: '10mb' }));
+    adminRouter.use('/custom', express.urlencoded({ extended: true, limit: '10mb' }));
+
     attachAdminWalletGrantRoutes(adminRouter);
+    attachCompanyTestRoutes(adminRouter);
+    attachMonitoringRoutes(adminRouter);
+    attachHabarRoutes(adminRouter);
+
+    await ensureTopicInviteIndexes();
 
     app.use(admin.options.rootPath, adminRouter);
 

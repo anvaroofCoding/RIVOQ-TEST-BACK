@@ -24,6 +24,7 @@ import notificationRoutes from './routes/notificationRoutes.js';
 import aiRoutes from './routes/aiRoutes.js';
 import aiAnalyzeRoutes from './routes/aiAnalyzeRoutes.js';
 import activityRoutes from './routes/activityRoutes.js';
+import companyRoutes from './routes/companyRoutes.js';
 
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import { createMailer, smtpMissingEnvKeysForOtp } from './utils/email.js';
@@ -82,6 +83,7 @@ async function buildApp() {
 
   app.use('/uploads', express.static(path.join(process.cwd(), 'public', 'uploads')));
 
+  // AdminJS dan keyin — global json `req._body` bilan AdminJS routerini buzadi
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
@@ -144,6 +146,7 @@ async function buildApp() {
   app.use('/api', aiRoutes);
   app.use('/api', aiAnalyzeRoutes);
   app.use('/api', activityRoutes);
+  app.use('/api/company', companyRoutes);
 
   app.use(notFoundHandler);
   app.use(errorHandler);

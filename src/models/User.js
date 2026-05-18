@@ -160,6 +160,15 @@ const userSchema = new mongoose.Schema(
 
     /** «Bugun faolman» uchun — kunlik mukofot (coins/score); `todayKeyUTC()` bilan taqqoslanadi */
     dailyPresenceDate: { type: String, default: null, index: true },
+
+    /** Kompaniya testlarida bloklash (faqat shu kompaniya kodlari uchun) */
+    companyBlocks: [
+      {
+        company: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+        blockedAt: { type: Date, default: () => new Date() },
+        reason: { type: String, default: '', trim: true, maxlength: 500 },
+      },
+    ],
   },
   { timestamps: true }
 );

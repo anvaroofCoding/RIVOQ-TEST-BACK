@@ -11,6 +11,18 @@ import { User } from '../models/User.js';
 import { Notification } from '../models/Notification.js';
 import { grantFinishRewardsIfNeeded, tryGrant80MilestoneOnce } from '../services/testRewards.js';
 import { ensureUserFriendIdFresh } from '../services/friendIdService.js';
+import { isUserBlockedByCompany } from '../services/companyBlockService.js';
+import {
+  buildInvitePlanMeta,
+  buildResumeDenied,
+  buildSegmentContext,
+  buildSegmentTransition,
+  createCompanyCodeSession,
+  findActiveCompanyCodeSession,
+  resolveInviteForSession,
+  resumePinPolicyPayload,
+  serializeSessionPlan,
+} from '../services/companyMultiTestService.js';
 
 function shuffle(array) {
   const a = [...array];
@@ -188,9 +200,11 @@ async function getCompanyPublicById(companyId) {
   };
 }
 
-function buildSessionStartPayload(session, topic, companyMeta = null) {
+function buildSessionStartPayload(session, topic, companyMeta = null, extras = {}) {
   const data = {
     sessionId: session._id,
+    sessionType: session.sessionType || 'standard',
+    multiTopic: session.sessionType === 'company_multi',
     topic: {
       _id: topic._id,
       name: topic.name,
@@ -200,14 +214,17 @@ function buildSessionStartPayload(session, topic, companyMeta = null) {
     total: session.total,
     expiresAt: session.expiresAt,
     remainingSeconds: remainingSeconds(session),
-    current: publicQuestion(session, 0),
+    current: publicQuestion(session, session.currentIndex || 0),
+    plan: extras.testPlan || serializeSessionPlan(session),
+    segment: buildSegmentContext(session, session.currentIndex || 0),
+    resumed: Boolean(extras.resumed),
   };
   if (companyMeta) {
     data.company = companyMeta;
   }
   return {
     success: true,
-    message: 'Test started',
+    message: extras.resumed ? 'Test resumed' : 'Test started',
     data,
   };
 }
@@ -399,6 +416,143 @@ export const listTopicsBySubject = asyncHandler(async (req, res, next) => {
   });
 });
 
+/**
+ * GET /api/company-test/resume
+ * Telefon o‘chib qolsa / ilovadan chiqqan bo‘lsa — kod qayta kiritmasdan davom etish.
+ * Bloklangan yoki test yopilgan bo‘lsa: canResume=false (mobil modal chiqarmaydi).
+ */
+export const resumeCompanyTest = asyncHandler(async (req, res, next) => {
+  const preferredSessionId = String(req.query.sessionId || req.query.session_id || '').trim() || null;
+
+  const sessionLean = await findActiveCompanyCodeSession(req.user._id, preferredSessionId);
+
+  if (!sessionLean) {
+    return res.status(StatusCodes.OK).json({
+      success: true,
+      data: buildResumeDenied(
+        'no_active_session',
+        'Davom ettirish uchun ochiq test topilmadi (vaqtinchalik — pin saqlanishi mumkin).'
+      ),
+    });
+  }
+
+  const session = await TestSession.findById(sessionLean._id);
+  if (!session) {
+    return res.status(StatusCodes.OK).json({
+      success: true,
+      data: buildResumeDenied('no_active_session', 'Sessiya topilmadi.'),
+    });
+  }
+
+  await ensureNotExpired(session);
+
+  if (session.status !== 'in_progress') {
+    const reason =
+      session.finishedAt && session.expiresAt && session.finishedAt >= session.expiresAt
+        ? 'session_expired'
+        : 'already_finished';
+    return res.status(StatusCodes.OK).json({
+      success: true,
+      data: buildResumeDenied(
+        reason,
+        reason === 'session_expired'
+          ? 'Test vaqti tugagan.'
+          : 'Test allaqachon yakunlangan.'
+      ),
+    });
+  }
+
+  const invite = await resolveInviteForSession(session);
+
+  if (!invite) {
+    return res.status(StatusCodes.OK).json({
+      success: true,
+      data: buildResumeDenied('invite_not_found', 'Kirish kodi topilmadi (pin saqlanishi mumkin).'),
+    });
+  }
+
+  if (invite.closedAt) {
+    return res.status(StatusCodes.OK).json({
+      success: true,
+      data: buildResumeDenied('test_closed', 'Kompaniya testni yopgan — davom ettirish mumkin emas.'),
+    });
+  }
+
+  if (isUserBlockedByCompany(req.user, invite.company)) {
+    return res.status(StatusCodes.OK).json({
+      success: true,
+      data: buildResumeDenied(
+        'blocked_by_company',
+        'Siz ushbu kompaniya testlaridan bloklangansiz.'
+      ),
+    });
+  }
+
+  const topic = await Topic.findById(session.topic).lean();
+  if (!topic) {
+    return next(new AppError('Topic not found', StatusCodes.NOT_FOUND));
+  }
+
+  const companyMeta = await getCompanyPublicById(invite.company);
+  const testPlan = await buildInvitePlanMeta(invite);
+  const violations = Number(session.companyTabViolationCount) || 0;
+  const code = String(session.accessCode || invite.code || '');
+
+  const cheatingSuspected = violations > 0;
+  const cheatingMessage = violations
+    ? `Test paytida ekrandan chiqish ${violations} marta qayd etilgan. Davom etishingiz mumkin — kompaniya monitoring qiladi.`
+    : 'Test to‘xtatilgan edi (telefon yoki ilova yopilgan). Davom etishingiz mumkin — qoidalarga rioya qiling.';
+
+  const idx = session.currentIndex;
+  const answered = session.questions.filter((q) => q.selectedAnswer).length;
+
+  return res.status(StatusCodes.OK).json({
+    success: true,
+    data: {
+      canResume: true,
+      reason: null,
+      clearResumePin: false,
+      resumed: true,
+      pinPolicy: resumePinPolicyPayload(),
+      cheatingWarning: {
+        suspected: true,
+        violationCount: violations,
+        message: cheatingMessage,
+        title: cheatingSuspected ? 'Qoida buzish qayd etilgan' : 'Test to‘xtatilgan edi',
+      },
+      ui: {
+        showResumeModal: true,
+        resumeTitle: 'Testni davom ettirasizmi?',
+        resumeSubtitle: 'Kod qayta kiritish shart emas — oxirgi joydan davom etasiz.',
+        primaryButton: 'Davom etish',
+        secondaryButton: 'Keyinroq',
+      },
+      sessionId: session._id,
+      inviteId: invite._id,
+      accessCode: code,
+      sessionType: session.sessionType || 'standard',
+      multiTopic: session.sessionType === 'company_multi',
+      topic: {
+        _id: topic._id,
+        name: topic.name,
+        minutes: topic.minutes,
+        difficulty: topic.difficulty,
+      },
+      total: session.total,
+      score: session.score,
+      currentIndex: idx,
+      answeredCount: answered,
+      expiresAt: session.expiresAt,
+      remainingSeconds: remainingSeconds(session),
+      current: publicQuestion(session, idx),
+      plan: serializeSessionPlan(session),
+      segment: buildSegmentContext(session, idx),
+      testPlan,
+      company: companyMeta,
+    },
+  });
+});
+
 export const previewTopicByAccessCode = asyncHandler(async (req, res, next) => {
   const code = String(req.body?.code || '').trim();
   if (!/^\d{6}$/.test(code)) {
@@ -413,30 +567,33 @@ export const previewTopicByAccessCode = asyncHandler(async (req, res, next) => {
     return next(new AppError('Bu test kompaniya tomonidan yopilgan.', StatusCodes.GONE));
   }
 
-  const topic = await Topic.findById(invite.topic).lean();
-  if (!topic) {
-    return next(new AppError('Topic not found', StatusCodes.NOT_FOUND));
+  if (isUserBlockedByCompany(req.user, invite.company)) {
+    return next(
+      new AppError('Siz ushbu kompaniya testlaridan bloklangansiz. Administrator bilan bog‘laning.', StatusCodes.FORBIDDEN)
+    );
   }
 
-  const subject = await Subject.findById(topic.subject).select('name description companyOwner').lean();
+  const plan = await buildInvitePlanMeta(invite);
+  if (!plan.segments.length) {
+    return next(new AppError('Test konfiguratsiyasi noto‘g‘ri', StatusCodes.BAD_REQUEST));
+  }
+
+  const first = plan.segments[0];
+  const subject = first.subject;
   if (!subject) {
     return next(new AppError('Subject not found', StatusCodes.NOT_FOUND));
   }
 
-  if (!subject.companyOwner) {
+  const subDoc = await Subject.findById(subject._id).select('companyOwner').lean();
+  if (!subDoc?.companyOwner) {
     return next(new AppError('This access code is not valid', StatusCodes.BAD_REQUEST));
-  }
-
-  const qCount = await Question.countDocuments({ topic: topic._id });
-  if (!qCount) {
-    return next(new AppError('No questions for this topic', StatusCodes.BAD_REQUEST));
   }
 
   const alreadyDone = await TestSession.findOne({
     user: req.user._id,
-    topic: topic._id,
-    status: 'finished',
     accessCode: code,
+    status: 'finished',
+    inviteId: invite._id,
   }).lean();
   if (alreadyDone) {
     return next(
@@ -447,28 +604,16 @@ export const previewTopicByAccessCode = asyncHandler(async (req, res, next) => {
     );
   }
 
-  const questionCount = Math.max(0, Number(topic.questionCount) || 0) || qCount;
-
-  const companyMeta = await getCompanyPublicById(invite.company || subject.companyOwner);
+  const companyMeta = await getCompanyPublicById(invite.company || subDoc.companyOwner);
 
   res.status(StatusCodes.OK).json({
     success: true,
     data: {
       code,
       company: companyMeta,
-      topic: {
-        _id: topic._id,
-        name: topic.name,
-        description: topic.description || '',
-        minutes: topic.minutes,
-        difficulty: topic.difficulty,
-        questionCount,
-      },
-      subject: {
-        _id: subject._id,
-        name: subject.name,
-        description: subject.description || '',
-      },
+      ...plan,
+      topic: first.topic,
+      subject: first.subject,
     },
   });
 });
@@ -491,11 +636,31 @@ export const startTopicWithAccessCode = asyncHandler(async (req, res, next) => {
   if (invite.closedAt) {
     return next(new AppError('Bu test kompaniya tomonidan yopilgan.', StatusCodes.GONE));
   }
-  const { session, topic } = await createTestSessionResponse(req.user._id, invite.topic, 'code', {
-    accessCode: invite.code,
-  });
+  if (isUserBlockedByCompany(req.user, invite.company)) {
+    return next(
+      new AppError('Siz ushbu kompaniya testlaridan bloklangansiz. Administrator bilan bog‘laning.', StatusCodes.FORBIDDEN)
+    );
+  }
+  let session;
+  let topic;
+  let resumed = false;
+  try {
+    const result = await createCompanyCodeSession(req.user._id, invite);
+    session = result.session;
+    topic = result.topic;
+    resumed = result.resumed;
+  } catch (e) {
+    if (e.statusCode === 403) {
+      return next(new AppError(e.message, StatusCodes.FORBIDDEN));
+    }
+    throw e;
+  }
+
   const companyMeta = await getCompanyPublicById(invite.company);
-  res.status(StatusCodes.CREATED).json(buildSessionStartPayload(session, topic, companyMeta));
+  const testPlan = await buildInvitePlanMeta(invite);
+  res
+    .status(StatusCodes.CREATED)
+    .json(buildSessionStartPayload(session, topic, companyMeta, { resumed, testPlan }));
 });
 
 export const getSession = asyncHandler(async (req, res, next) => {
@@ -535,7 +700,56 @@ export const getSession = asyncHandler(async (req, res, next) => {
         unansweredCount: session.unansweredCount,
       },
       current: session.status === 'in_progress' ? publicQuestion(session, session.currentIndex) : null,
+      plan: serializeSessionPlan(session),
+      segment: buildSegmentContext(session, session.currentIndex),
+      multiTopic: session.sessionType === 'company_multi',
       ...(companyMeta ? { company: companyMeta } : {}),
+    },
+  });
+});
+
+/** GET test rejasi (mavzular ketma-ketligi, joriy segment) */
+export const getSessionTestPlan = asyncHandler(async (req, res, next) => {
+  const session = await TestSession.findOne({ _id: req.params.sessionId, user: req.user._id });
+  if (!session) return next(new AppError('Session not found', StatusCodes.NOT_FOUND));
+  await ensureNotExpired(session);
+
+  const segment = buildSegmentContext(session, session.currentIndex);
+  const transition =
+    session.status === 'in_progress' && segment.isFirstQuestionInSegment && segment.segmentIndex > 0
+      ? buildSegmentTransition(session, session.currentIndex - 1, session.currentIndex)
+      : null;
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    data: {
+      plan: serializeSessionPlan(session),
+      segment,
+      segmentTransition: transition,
+      status: session.status,
+      currentIndex: session.currentIndex,
+    },
+  });
+});
+
+/** Keyingi mavzuga o‘tishdan oldin ogohlantirish (mobil modal) */
+export const getSessionSegmentTransition = asyncHandler(async (req, res, next) => {
+  const session = await TestSession.findOne({ _id: req.params.sessionId, user: req.user._id });
+  if (!session) return next(new AppError('Session not found', StatusCodes.NOT_FOUND));
+  await ensureNotExpired(session);
+  if (session.status !== 'in_progress') {
+    return next(new AppError('Session is not active', StatusCodes.BAD_REQUEST));
+  }
+
+  const idx = Number(req.query.atIndex ?? session.currentIndex);
+  const transition = buildSegmentTransition(session, idx - 1, idx);
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    data: {
+      hasTransition: Boolean(transition),
+      segmentTransition: transition,
+      segment: buildSegmentContext(session, idx),
     },
   });
 });
@@ -577,15 +791,19 @@ export const notifyCompanyTestTabLeave = asyncHandler(async (req, res, next) => 
     );
   }
 
-  const topic = await Topic.findById(session.topic).select('subject name').lean();
-  if (!topic) return next(new AppError('Topic not found', StatusCodes.NOT_FOUND));
-
-  const sub = await Subject.findById(topic.subject).select('companyOwner').lean();
+  const sub = await Subject.findById(
+    (await Topic.findById(session.topic).select('subject').lean())?.subject
+  )
+    .select('companyOwner')
+    .lean();
   if (!sub?.companyOwner) {
     return next(new AppError('Bu bildirishnoma faqat kompaniya testi uchun', StatusCodes.BAD_REQUEST));
   }
 
-  const invite = await TopicInviteCode.findOne({ topic: session.topic }).select('company').lean();
+  const codeSnap = String(session.accessCode || '');
+  const invite = /^\d{6}$/.test(codeSnap)
+    ? await TopicInviteCode.findOne({ code: codeSnap }).select('company').lean()
+    : await TopicInviteCode.findOne({ topic: session.topic, closedAt: null }).select('company').lean();
   const companyId = invite?.company ? String(invite.company) : String(sub.companyOwner);
 
   const companyUser = await User.findById(companyId).select('role').lean();
@@ -610,8 +828,11 @@ export const notifyCompanyTestTabLeave = asyncHandler(async (req, res, next) => 
   const fn = [participant.firstName, participant.lastName].filter(Boolean).join(' ').trim();
   const displayName = fn || participant.name || 'Foydalanuvchi';
 
+  const seg = buildSegmentContext(session, session.currentIndex);
+  const topicLabel = seg?.topic?.name || 'Test';
+
   const title = 'Kompaniya testi: qoida buzilish';
-  const body = `${displayName} (${participant.email}) test paytida ekrandan uzoqroq chiqqan — qoidalarni buzishi mumkin. Mavzu: «${topic.name}».`;
+  const body = `${displayName} (${participant.email}) test paytida ekrandan uzoqroq chiqqan — qoidalarni buzishi mumkin. Mavzu: «${topicLabel}».`;
 
   await Notification.create({
     user: companyId,
@@ -621,8 +842,8 @@ export const notifyCompanyTestTabLeave = asyncHandler(async (req, res, next) => 
     data: {
       kind: 'test_tab_or_background_leave',
       sessionId: String(session._id),
-      topicId: String(topic._id),
-      topicName: topic.name,
+      topicId: String(seg?.topic?._id || session.topic),
+      topicName: topicLabel,
       participantId: String(req.user._id),
       participantEmail: participant.email,
       participantName: displayName,
@@ -631,6 +852,7 @@ export const notifyCompanyTestTabLeave = asyncHandler(async (req, res, next) => 
   });
 
   session.lastCompanyTabViolationNotifiedAt = new Date();
+  session.companyTabViolationCount = (Number(session.companyTabViolationCount) || 0) + 1;
   await session.save();
 
   return res.status(StatusCodes.CREATED).json({
@@ -675,13 +897,20 @@ export const answerSession = asyncHandler(async (req, res, next) => {
   q.isCorrect = selected === q.correctAnswer;
   if (q.isCorrect) session.score += 1;
 
+  const prevIndex = idx;
   const isLast = idx >= session.questions.length - 1;
+  let segmentTransition = null;
+
   if (isLast) {
     session.status = 'finished';
     session.finishedAt = new Date();
     finalizeSessionCounts(session);
   } else {
-    session.currentIndex += 1;
+    const nextIndex = idx + 1;
+    segmentTransition = buildSegmentTransition(session, prevIndex, nextIndex);
+    session.currentIndex = nextIndex;
+    const seg = buildSegmentContext(session, nextIndex);
+    session.currentSegmentIndex = seg.segmentIndex ?? 0;
   }
 
   await session.save();
@@ -699,6 +928,10 @@ export const answerSession = asyncHandler(async (req, res, next) => {
       score: session.score,
       total: session.total,
       next: session.status === 'in_progress' ? publicQuestion(session, session.currentIndex) : null,
+      segment: buildSegmentContext(session, session.currentIndex),
+      segmentTransition,
+      plan: serializeSessionPlan(session),
+      multiTopic: session.sessionType === 'company_multi',
       remainingSeconds: remainingSeconds(session),
       finishedAt: session.finishedAt,
       correctCount: session.correctCount,

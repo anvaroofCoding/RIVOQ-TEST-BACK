@@ -8,6 +8,24 @@ const sessionQuestionSchema = new mongoose.Schema(
     correctAnswer: { type: String, required: true },
     selectedAnswer: { type: String, default: null },
     isCorrect: { type: Boolean, default: null },
+    /** Ko‘p mavzuli testda qaysi mavzuga tegishli */
+    segmentIndex: { type: Number, default: 0, min: 0 },
+    topicId: { type: mongoose.Schema.Types.ObjectId, ref: 'Topic', default: null },
+  },
+  { _id: false }
+);
+
+const sessionSegmentSchema = new mongoose.Schema(
+  {
+    segmentIndex: { type: Number, required: true, min: 0 },
+    topic: { type: mongoose.Schema.Types.ObjectId, ref: 'Topic', required: true },
+    topicName: { type: String, default: '' },
+    subject: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject', default: null },
+    subjectName: { type: String, default: '' },
+    startIndex: { type: Number, required: true, min: 0 },
+    endIndex: { type: Number, required: true, min: 0 },
+    questionCount: { type: Number, required: true, min: 1 },
+    minutes: { type: Number, default: 0, min: 0 },
   },
   { _id: false }
 );
@@ -29,29 +47,25 @@ const testSessionSchema = new mongoose.Schema(
     wrongCount: { type: Number, default: 0, min: 0 },
     unansweredCount: { type: Number, default: 0, min: 0 },
 
-    /** Kod orqali kirish: sessiya yaratilgandagi 6 raqam (kod yangilanganda boshqa qiymat — qayta kirish mumkin) */
-    accessCode: {
-      type: String,
-      default: null,
-      index: true,
-    },
+    accessCode: { type: String, default: null, index: true },
+    inviteId: { type: mongoose.Schema.Types.ObjectId, ref: 'TopicInviteCode', default: null, index: true },
 
-    // Rewards (to avoid double-granting)
+    /** `standard` | `company_multi` */
+    sessionType: { type: String, enum: ['standard', 'company_multi'], default: 'standard', index: true },
+    segments: { type: [sessionSegmentSchema], default: [] },
+    currentSegmentIndex: { type: Number, default: 0, min: 0 },
+
     rewardsGranted: { type: Boolean, default: false, index: true },
-    /** Jarayonda 80%+ chiqganda bir martalik coin (qiyinchilikka qarab) */
     milestone80Granted: { type: Boolean, default: false, index: true },
     milestoneCoinsAwarded: { type: Number, default: 0, min: 0 },
     coinsAwarded: { type: Number, default: 0, min: 0 },
     scoreAwarded: { type: Number, default: 0, min: 0 },
-
-    /** Mukofot logikasi yangilandi; `<2` — eski yozuvlar (faqat retrospect milestone ignore) */
     rewardVersion: { type: Number, default: 2, min: 1 },
 
-    /** Kompaniya testi: tab/background — kompaniyaga oxirgi bildirishnoma yuborilgan vaqt (spam oldini olish) */
     lastCompanyTabViolationNotifiedAt: { type: Date, default: null },
+    companyTabViolationCount: { type: Number, default: 0, min: 0 },
   },
   { timestamps: true }
 );
 
 export const TestSession = mongoose.model('TestSession', testSessionSchema);
-
