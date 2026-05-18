@@ -238,7 +238,7 @@ export async function sendOtpEmail({ to, code }) {
   }
 
   /** Gmail frequently rejects arbitrary From ≠ login unless “alias” configured */
-  let from = fromRaw;
+  from = fromRaw;
   if (/^smtp\.gmail\.com$/i.test(c.host || '') && c.user && /@gmail\.com$/i.test(c.user)) {
     if (!from.includes(c.user)) {
       // eslint-disable-next-line no-console
